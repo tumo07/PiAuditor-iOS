@@ -1,0 +1,17 @@
+[Unit]
+Description=PiAuditor Bluetooth Low Energy GATT Control Daemon
+After=bluetooth.target
+Wants=bluetooth.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/khoa/wifi_auditor
+ExecStart=/usr/bin/python3 /home/khoa/wifi_auditor/ble_auditor_daemon.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,2 @@
+# Debian/Kali system packages required:
+# apt install -y python3-dbus python3-gi bluez
