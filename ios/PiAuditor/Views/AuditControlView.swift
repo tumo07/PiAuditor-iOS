@@ -5,6 +5,7 @@ struct AuditControlView: View {
     let network: WiFiNetwork
     @ObservedObject var ble = BLEManager.shared
     
+    @State private var bursts: Int = 3
     @State private var deauthBurstPacing: Double = 0.2
     @State private var silentWindow: Double = 8.0
     @State private var confirmLaunch = false
@@ -24,21 +25,38 @@ struct AuditControlView: View {
                         Text(network.bssid).font(.footnote).foregroundColor(.secondary)
                     }
                     HStack {
-                        Text("Channel")
+                        Text("Channel & Band")
                         Spacer()
-                        Text("Ch \(network.channel)").foregroundColor(.blue)
+                        Text("Ch \(network.channel) (\(network.is5GHz ? "5 GHz" : "2.4 GHz"))")
+                            .foregroundColor(network.is5GHz ? .purple : .blue)
+                            .bold()
+                    }
+                    HStack {
+                        Text("Security")
+                        Spacer()
+                        Text(network.security).foregroundColor(.secondary)
                     }
                     HStack {
                         Text("Signal Strength")
                         Spacer()
-                        Text("\(network.signal)%")
+                        Text(network.signalFormatted)
+                            .foregroundColor(signalColor(network.signalPercentage))
+                            .bold()
                     }
                 }
                 
-                Section(header: Text("Composite Injection Parameters")) {
+                Section(header: Text("Autonomous Audit Strategy")) {
+                    Stepper(value: $bursts, in: 1...6) {
+                        HStack {
+                            Text("Micro-Bursts")
+                            Spacer()
+                            Text("\(bursts) cycles").foregroundColor(.secondary)
+                        }
+                    }
+                    
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text("Micro-Burst Pacing")
+                            Text("Inter-Frame Pacing")
                             Spacer()
                             Text("\(String(format: "%.1f", deauthBurstPacing))s").foregroundColor(.secondary)
                         }
@@ -47,7 +65,7 @@ struct AuditControlView: View {
                     
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
-                            Text("Silent Listening Window")
+                            Text("Passive Listening Window")
                             Spacer()
                             Text("\(Int(silentWindow))s").foregroundColor(.secondary)
                         }
@@ -55,7 +73,7 @@ struct AuditControlView: View {
                     }
                 }
                 
-                Section(footer: Text("Audit Mode switches wlan0 to monitor mode (wlan0mon). The hotspot will power cycle, but your BLE connection stays active.")) {
+                Section(footer: Text("The Pi will isolate wlan0 to monitor mode (wlan0mon) on Channel \(network.channel). BLE command and telemetry stay active.")) {
                     Button(action: {
                         confirmLaunch = true
                     }) {
@@ -66,7 +84,7 @@ struct AuditControlView: View {
                                 .foregroundColor(.white)
                             Spacer()
                         }
-                        .padding(.vertical, 6)
+                        .padding(.vertical, 8)
                     }
                     .listRowBackground(Color.orange)
                 }
@@ -80,12 +98,19 @@ struct AuditControlView: View {
                     title: Text("Confirm Target Audit"),
                     message: Text("Are you authorized to assess '\(network.ssid)'? The Pi will isolate wlan0 and transmit composite bursts to elicit a 4-way handshake."),
                     primaryButton: .destructive(Text("Authorize & Start")) {
-                        ble.startAudit(network: network)
+                        ble.startAudit(network: network, bursts: bursts, pacing: deauthBurstPacing)
                         presentationMode.wrappedValue.dismiss()
                     },
                     secondaryButton: .cancel()
                 )
             }
         }
+    }
+    
+    private func signalColor(_ sig: Int) -> Color {
+        if sig > 70 { return .green }
+        if sig > 40 { return .blue }
+        if sig > 20 { return .orange }
+        return .red
     }
 }

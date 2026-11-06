@@ -1,6 +1,9 @@
 import Foundation
 import CoreBluetooth
 import Combine
+#if canImport(UIKit)
+import UIKit
+#endif
 
 public class BLEManager: NSObject, ObservableObject {
     public static let shared = BLEManager()
@@ -20,6 +23,9 @@ public class BLEManager: NSObject, ObservableObject {
     private var centralManager: CBCentralManager!
     private var peripheral: CBPeripheral?
     private var commandChar: CBCharacteristic?
+    private var surveyChar: CBCharacteristic?
+    private var statusChar: CBCharacteristic?
+    private var hadHandshakeAlert = false
     
     public override init() {
         super.init()
@@ -68,11 +74,30 @@ public class BLEManager: NSObject, ObservableObject {
         }
     }
     
-    public func startAudit(network: WiFiNetwork) {
+    public func readSurvey() {
+        guard let p = peripheral, let sChar = surveyChar else {
+            appendLog("[!] Cannot read survey: Characteristic not discovered.")
+            return
+        }
+        p.readValue(for: sChar)
+    }
+    
+    public func startAudit(network: WiFiNetwork, bursts: Int = 3, pacing: Double = 0.2) {
         sendCommand(action: "START_AUDIT", parameters: [
-            "ssid": network.ssid,
+            "ssid": network.ssid == "<Hidden SSID>" ? "" : network.ssid,
             "bssid": network.bssid,
-            "channel": Int(network.channel) ?? 1
+            "channel": Int(network.channel) ?? 1,
+            "bursts": bursts,
+            "pacing": pacing
+        ])
+    }
+    
+    public func startManualAudit(ssid: String, bssid: String, channel: Int, bursts: Int = 3) {
+        sendCommand(action: "START_AUDIT", parameters: [
+            "ssid": ssid,
+            "bssid": bssid,
+            "channel": channel,
+            "bursts": bursts
         ])
     }
     
@@ -82,6 +107,22 @@ public class BLEManager: NSObject, ObservableObject {
     
     public func requestSurvey() {
         sendCommand(action: "SURVEY")
+        // Schedule follow-up reads to ingest scanned networks as survey completes
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.readSurvey()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { [weak self] in
+            self?.readSurvey()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
+            self?.readSurvey()
+        }
+    }
+    
+    public func clearSurvey() {
+        sendCommand(action: "CLEAR_SURVEY")
+        self.surveyedNetworks = []
+        appendLog("[*] Cleared surveyed network cache.")
     }
     
     public func rebootPi() {
@@ -92,10 +133,10 @@ public class BLEManager: NSObject, ObservableObject {
         sendCommand(action: "SHUTDOWN")
     }
     
-    private func appendLog(_ message: String) {
+    public func appendLog(_ message: String) {
         let timestamp = DateFormatter.localizedString(from: Date(), dateStyle: .none, timeStyle: .medium)
         logs.insert("[\(timestamp)] \(message)", at: 0)
-        if logs.count > 100 {
+        if logs.count > 150 {
             logs.removeLast()
         }
     }
@@ -130,6 +171,7 @@ extension BLEManager: CBCentralManagerDelegate {
     
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         self.isConnected = true
+        self.hadHandshakeAlert = false
         appendLog("[+] Connected to PiAuditor!")
         peripheral.delegate = self
         peripheral.discoverServices([BLEManager.serviceUUID])
@@ -138,6 +180,8 @@ extension BLEManager: CBCentralManagerDelegate {
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         self.isConnected = false
         self.commandChar = nil
+        self.surveyChar = nil
+        self.statusChar = nil
         appendLog("[-] Disconnected from PiAuditor. Re-scanning...")
         startScanning()
     }
@@ -166,11 +210,13 @@ extension BLEManager: CBPeripheralDelegate {
         guard let chars = service.characteristics else { return }
         for ch in chars {
             if ch.uuid == BLEManager.statusCharUUID {
+                self.statusChar = ch
                 peripheral.setNotifyValue(true, for: ch)
                 peripheral.readValue(for: ch)
             } else if ch.uuid == BLEManager.commandCharUUID {
                 self.commandChar = ch
             } else if ch.uuid == BLEManager.surveyCharUUID {
+                self.surveyChar = ch
                 peripheral.setNotifyValue(true, for: ch)
                 peripheral.readValue(for: ch)
             }
@@ -184,9 +230,27 @@ extension BLEManager: CBPeripheralDelegate {
             do {
                 let decoder = JSONDecoder()
                 let state = try decoder.decode(PiState.self, from: data)
+                let previousMode = self.piState.mode
+                
                 DispatchQueue.main.async {
                     self.piState = state
-                    self.appendLog("[Status Update] Mode: \(state.mode.displayTitle) | Handshakes: \(state.handshakes) | Temp: \(state.cpuTemp)°C")
+                    self.appendLog("[Status] \(state.mode.displayTitle) | Handshakes: \(state.handshakes) | Temp: \(state.cpuTemp)°C")
+                    
+                    // Trigger automatic survey read once surveying completes
+                    if previousMode == .surveying && state.mode != .surveying {
+                        self.appendLog("[*] Scan completed. Requesting updated visible networks...")
+                        self.readSurvey()
+                    }
+                    
+                    // Alert when handshake is captured
+                    if state.handshakeCaptured && !self.hadHandshakeAlert {
+                        self.hadHandshakeAlert = true
+                        #if canImport(UIKit)
+                        let generator = UINotificationFeedbackGenerator()
+                        generator.notificationOccurred(.success)
+                        #endif
+                        self.appendLog("[🎉 HANDSHAKE CAPTURED!] Target: \(state.targetSSID) on Ch \(state.channel)")
+                    }
                 }
             } catch {
                 if let str = String(data: data, encoding: .utf8) {
@@ -199,10 +263,18 @@ extension BLEManager: CBPeripheralDelegate {
                 let networks = try decoder.decode([WiFiNetwork].self, from: data)
                 DispatchQueue.main.async {
                     self.surveyedNetworks = networks
-                    self.appendLog("[Survey] Loaded \(networks.count) surveyed networks.")
+                    self.appendLog("[Survey] Loaded \(networks.count) surveyed networks from Pi.")
                 }
             } catch {
-                // Ignore partial chunks
+                // If it's a notification trigger with metadata, issue a full read
+                if let str = String(data: data, encoding: .utf8), str.contains("count") {
+                    self.readSurvey()
+                } else {
+                    self.appendLog("[Survey Notice] Received \(data.count) bytes. Parsing...")
+                    if let rawStr = String(data: data, encoding: .utf8) {
+                        self.appendLog("[Survey Preview]: \(rawStr.prefix(80))...")
+                    }
+                }
             }
         }
     }

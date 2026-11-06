@@ -154,7 +154,7 @@ class StatusCharacteristic(Characteristic):
     def ReadValue(self, options):
         offset = int(options.get('offset', 0))
         payload = json.dumps(self.state.get_status()).encode('utf-8')
-        if offset > len(payload):
+        if offset >= len(payload):
             return []
         return [dbus.Byte(b) for b in payload[offset:]]
 
@@ -172,10 +172,11 @@ class StatusCharacteristic(Characteristic):
 
 
 class CommandCharacteristic(Characteristic):
-    def __init__(self, bus, index, service, daemon_state, status_chrc):
+    def __init__(self, bus, index, service, daemon_state, status_chrc, survey_chrc):
         super().__init__(bus, index, COMMAND_CHRC_UUID, ['write', 'write-without-response'], service)
         self.state = daemon_state
         self.status_chrc = status_chrc
+        self.survey_chrc = survey_chrc
 
     @dbus.service.method(GATT_CHRC_IFACE, in_signature='aya{sv}')
     def WriteValue(self, value, options):
@@ -183,7 +184,7 @@ class CommandCharacteristic(Characteristic):
         print(f"[CMD INCOMING]: {cmd_str}")
         try:
             cmd_json = json.loads(cmd_str)
-            self.state.execute_command(cmd_json)
+            self.state.execute_command(cmd_json, self.survey_chrc)
             self.status_chrc.send_status_notification()
         except Exception as e:
             print(f"[!] Error processing command: {e}")
@@ -194,22 +195,49 @@ class SurveyCharacteristic(Characteristic):
         super().__init__(bus, index, SURVEY_CHRC_UUID, ['read', 'notify'], service)
         self.notifying = False
         self.state = daemon_state
+        self._cached_data = None
+        self._cached_time = 0
+
+    @dbus.service.signal(DBUS_PROP_IFACE, signature='sa{sv}as')
+    def PropertiesChanged(self, interface, changed, invalidated):
+        pass
+
+    def send_survey_notification(self):
+        if not self.notifying:
+            return
+        summary = {"count": len(self.state.get_survey()), "ts": int(time.time())}
+        payload = json.dumps(summary).encode('utf-8')
+        value = [dbus.Byte(b) for b in payload]
+        print(f"[+] Notifying iOS about survey update: {summary}")
+        self.PropertiesChanged(
+            GATT_CHRC_IFACE,
+            {'Value': value},
+            []
+        )
 
     @dbus.service.method(GATT_CHRC_IFACE, in_signature='a{sv}', out_signature='ay')
     def ReadValue(self, options):
         offset = int(options.get('offset', 0))
-        survey_data = json.dumps(self.state.get_survey()).encode('utf-8')
-        if offset > len(survey_data):
+        now = time.time()
+        # Cache during chunked reads (within 3 seconds) for data consistency
+        if offset == 0 or self._cached_data is None or (now - self._cached_time > 3.0):
+            self._cached_data = json.dumps(self.state.get_survey()).encode('utf-8')
+            self._cached_time = now
+            print(f"[+] Survey read requested (offset={offset}, total_bytes={len(self._cached_data)})")
+
+        if offset >= len(self._cached_data):
             return []
-        return [dbus.Byte(b) for b in survey_data[offset:]]
+        return [dbus.Byte(b) for b in self._cached_data[offset:]]
 
     @dbus.service.method(GATT_CHRC_IFACE)
     def StartNotify(self):
         self.notifying = True
+        print("[+] iOS client subscribed to Survey notifications.")
 
     @dbus.service.method(GATT_CHRC_IFACE)
     def StopNotify(self):
         self.notifying = False
+        print("[-] iOS client unsubscribed from Survey notifications.")
 
 
 class Advertisement(dbus.service.Object):
@@ -272,6 +300,11 @@ class DaemonState:
         handshakes = self.handshakes_count
         clients = self.active_clients
         last_event = self.last_event
+        burst_current = 0
+        bursts_total = 3
+        packets = 0
+        pcap_size_kb = 0.0
+        handshake_captured = False
 
         try:
             req = urllib.request.Request("http://127.0.0.1:5000/api/status", headers={"User-Agent": "PiAuditor-BLE"})
@@ -283,7 +316,12 @@ class DaemonState:
                     target_ssid = tgt.get("ssid", target_ssid)
                     target_bssid = tgt.get("bssid", target_bssid)
                     channel = tgt.get("channel", channel)
-                if data.get("handshake_captured"):
+                burst_current = data.get("burst_current", 0)
+                bursts_total = data.get("bursts_total", 3)
+                packets = data.get("packets", 0)
+                pcap_size_kb = float(data.get("pcap_size_kb", 0))
+                handshake_captured = bool(data.get("handshake_captured", False))
+                if handshake_captured:
                     handshakes = 1
                 phase = data.get("burst_phase", "")
                 if phase:
@@ -300,6 +338,7 @@ class DaemonState:
                         mode = "AUDITING"
                         if j.get("handshake_captured"):
                             handshakes = 1
+                            handshake_captured = True
                 except Exception:
                     pass
 
@@ -312,7 +351,12 @@ class DaemonState:
             "clients": clients,
             "cpu_temp": self.get_cpu_temp(),
             "event": last_event,
-            "uptime": int(time.time())
+            "uptime": int(time.time()),
+            "burst_current": burst_current,
+            "bursts_total": bursts_total,
+            "packets": packets,
+            "pcap_size_kb": pcap_size_kb,
+            "handshake_captured": handshake_captured
         }
 
     def get_survey(self):
@@ -323,25 +367,31 @@ class DaemonState:
                     data = json.load(f)
                     sorted_data = sorted(data, key=lambda x: x.get('rssi', -100), reverse=True)
                     nets = []
-                    for item in sorted_data[:15]:
+                    for item in sorted_data[:20]:
+                        ssid = str(item.get("ssid", "Unknown"))[:32]
+                        bssid = str(item.get("bssid", ""))
+                        channel = str(item.get("channel", 1))
+                        signal = int(item.get("rssi", -80))
+                        security = str(item.get("crypto", "WPA2"))
                         nets.append({
-                            "ssid": item.get("ssid", "Unknown")[:24],
-                            "bssid": item.get("bssid", ""),
-                            "channel": item.get("channel", 1),
-                            "signal": item.get("rssi", -80),
-                            "security": item.get("crypto", "WPA2")
+                            "ssid": ssid,
+                            "bssid": bssid,
+                            "channel": channel,
+                            "signal": signal,
+                            "security": security
                         })
                     return nets
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[!] Error reading survey.json: {e}")
         return self.survey_cache
 
-    def execute_command(self, cmd):
+    def execute_command(self, cmd, survey_chrc=None):
         action = cmd.get("action", "").upper()
         if action == "START_AUDIT":
             self.target_ssid = cmd.get("ssid", "")
             self.target_bssid = cmd.get("bssid", "")
             self.channel = int(cmd.get("channel", 1))
+            bursts = int(cmd.get("bursts", 3))
             self.mode = "AUDITING"
             self.last_event = f"Audit started for {self.target_ssid} (ch {self.channel})"
 
@@ -351,7 +401,7 @@ class DaemonState:
                         "ssid": self.target_ssid,
                         "bssid": self.target_bssid,
                         "channel": self.channel,
-                        "bursts": 3
+                        "bursts": bursts
                     }).encode("utf-8")
                     req = urllib.request.Request(
                         "http://127.0.0.1:5000/api/start",
@@ -380,9 +430,27 @@ class DaemonState:
                 try:
                     req = urllib.request.Request("http://127.0.0.1:5000/api/rescan", data=b"{}")
                     urllib.request.urlopen(req, timeout=3.0)
+                    time.sleep(5)
+                    if survey_chrc:
+                        survey_chrc.send_survey_notification()
                 except Exception:
                     pass
             threading.Thread(target=_post_rescan, daemon=True).start()
+
+        elif action == "CLEAR_SURVEY":
+            self.last_event = "Clearing survey cache"
+            def _post_clear():
+                try:
+                    req = urllib.request.Request("http://127.0.0.1:5000/api/survey/clear", data=b"{}")
+                    urllib.request.urlopen(req, timeout=2.0)
+                except Exception:
+                    try:
+                        os.remove("/home/khoa/wifi_auditor/survey.json")
+                    except Exception:
+                        pass
+                if survey_chrc:
+                    survey_chrc.send_survey_notification()
+            threading.Thread(target=_post_clear, daemon=True).start()
 
         elif action == "REBOOT":
             self.last_event = "Rebooting system..."
@@ -476,8 +544,8 @@ def main():
     app = Application(bus)
     service = Service(bus, 0, SERVICE_UUID, True)
     status_chrc = StatusCharacteristic(bus, 0, service, daemon_state)
-    cmd_chrc = CommandCharacteristic(bus, 1, service, daemon_state, status_chrc)
     survey_chrc = SurveyCharacteristic(bus, 2, service, daemon_state)
+    cmd_chrc = CommandCharacteristic(bus, 1, service, daemon_state, status_chrc, survey_chrc)
 
     service.add_characteristic(status_chrc)
     service.add_characteristic(cmd_chrc)
