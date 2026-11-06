@@ -152,8 +152,11 @@ class StatusCharacteristic(Characteristic):
 
     @dbus.service.method(GATT_CHRC_IFACE, in_signature='a{sv}', out_signature='ay')
     def ReadValue(self, options):
+        offset = int(options.get('offset', 0))
         payload = json.dumps(self.state.get_status()).encode('utf-8')
-        return [dbus.Byte(b) for b in payload]
+        if offset > len(payload):
+            return []
+        return [dbus.Byte(b) for b in payload[offset:]]
 
     @dbus.service.method(GATT_CHRC_IFACE)
     def StartNotify(self):
@@ -194,8 +197,11 @@ class SurveyCharacteristic(Characteristic):
 
     @dbus.service.method(GATT_CHRC_IFACE, in_signature='a{sv}', out_signature='ay')
     def ReadValue(self, options):
+        offset = int(options.get('offset', 0))
         survey_data = json.dumps(self.state.get_survey()).encode('utf-8')
-        return [dbus.Byte(b) for b in survey_data]
+        if offset > len(survey_data):
+            return []
+        return [dbus.Byte(b) for b in survey_data[offset:]]
 
     @dbus.service.method(GATT_CHRC_IFACE)
     def StartNotify(self):
@@ -315,10 +321,11 @@ class DaemonState:
             try:
                 with open(survey_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                    sorted_data = sorted(data, key=lambda x: x.get('rssi', -100), reverse=True)
                     nets = []
-                    for item in data[:25]:
+                    for item in sorted_data[:15]:
                         nets.append({
-                            "ssid": item.get("ssid", "Unknown"),
+                            "ssid": item.get("ssid", "Unknown")[:24],
                             "bssid": item.get("bssid", ""),
                             "channel": item.get("channel", 1),
                             "signal": item.get("rssi", -80),
