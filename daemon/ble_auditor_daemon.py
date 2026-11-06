@@ -393,6 +393,48 @@ class DaemonState:
             threading.Thread(target=lambda: (time.sleep(2), subprocess.run(["poweroff"]))).start()
 
 
+AGENT_PATH = '/org/bluez/piauditor_agent'
+AGENT_IFACE = 'org.bluez.Agent1'
+
+
+class Agent(dbus.service.Object):
+    @dbus.service.method(AGENT_IFACE, in_signature='', out_signature='')
+    def Release(self):
+        pass
+
+    @dbus.service.method(AGENT_IFACE, in_signature='os', out_signature='')
+    def AuthorizeService(self, device, uuid):
+        return
+
+    @dbus.service.method(AGENT_IFACE, in_signature='o', out_signature='s')
+    def RequestPinCode(self, device):
+        return "0000"
+
+    @dbus.service.method(AGENT_IFACE, in_signature='o', out_signature='u')
+    def RequestPasskey(self, device):
+        return dbus.UInt32(0)
+
+    @dbus.service.method(AGENT_IFACE, in_signature='ouq', out_signature='')
+    def DisplayPasskey(self, device, passkey, entered):
+        pass
+
+    @dbus.service.method(AGENT_IFACE, in_signature='os', out_signature='')
+    def DisplayPinCode(self, device, pincode):
+        pass
+
+    @dbus.service.method(AGENT_IFACE, in_signature='ou', out_signature='')
+    def RequestConfirmation(self, device, passkey):
+        return
+
+    @dbus.service.method(AGENT_IFACE, in_signature='o', out_signature='')
+    def RequestAuthorization(self, device):
+        return
+
+    @dbus.service.method(AGENT_IFACE, in_signature='', out_signature='')
+    def Cancel(self):
+        pass
+
+
 def main():
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
     bus = dbus.SystemBus()
@@ -414,7 +456,19 @@ def main():
     adapter_props = dbus.Interface(bus.get_object(BLUEZ_SERVICE_NAME, adapter_path), DBUS_PROP_IFACE)
     adapter_props.Set('org.bluez.Adapter1', 'Powered', dbus.Boolean(True))
     adapter_props.Set('org.bluez.Adapter1', 'Discoverable', dbus.Boolean(True))
+    adapter_props.Set('org.bluez.Adapter1', 'Pairable', dbus.Boolean(True))
+    adapter_props.Set('org.bluez.Adapter1', 'PairableTimeout', dbus.UInt32(0))
     adapter_props.Set('org.bluez.Adapter1', 'Alias', dbus.String('PiAuditor-BLE'))
+
+    # Register Just-Works Agent for seamless iOS pairing without Authentication Failure
+    agent = Agent(bus, AGENT_PATH)
+    try:
+        agent_mgr = dbus.Interface(bus.get_object(BLUEZ_SERVICE_NAME, '/org/bluez'), 'org.bluez.AgentManager1')
+        agent_mgr.RegisterAgent(AGENT_PATH, 'NoInputNoOutput')
+        agent_mgr.RequestDefaultAgent(AGENT_PATH)
+        print("[+] Just-Works BLE Pairing Agent registered successfully.")
+    except Exception as e:
+        print(f"[!] Warning registering Pairing Agent: {e}")
 
     daemon_state = DaemonState()
 
