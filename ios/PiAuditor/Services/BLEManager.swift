@@ -91,6 +91,25 @@ public class BLEManager: NSObject, ObservableObject {
         }
     }
     
+    public func mergeSurveyNetworks(_ networks: [WiFiNetwork]) {
+        DispatchQueue.main.async {
+            for net in networks {
+                if let idx = self.surveyedNetworks.firstIndex(where: { $0.bssid.caseInsensitiveCompare(net.bssid) == .orderedSame }) {
+                    self.surveyedNetworks[idx] = net
+                } else {
+                    let isPriority = net.ssid.localizedCaseInsensitiveContains("luka") ||
+                                     net.ssid.localizedCaseInsensitiveContains("o-dev") ||
+                                     net.ssid.localizedCaseInsensitiveContains("odev")
+                    if isPriority {
+                        self.surveyedNetworks.insert(net, at: 0)
+                    } else {
+                        self.surveyedNetworks.append(net)
+                    }
+                }
+            }
+        }
+    }
+    
     public func readSurvey() {
         guard let p = peripheral, let sChar = surveyChar else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
@@ -98,9 +117,15 @@ public class BLEManager: NSObject, ObservableObject {
                     p2.readValue(for: s2)
                 }
             }
+            Task {
+                await APIService.shared.fetchSurvey()
+            }
             return
         }
         p.readValue(for: sChar)
+        Task {
+            await APIService.shared.fetchSurvey()
+        }
     }
     
     public func startAudit(network: WiFiNetwork, bursts: Int = 3, pacing: Double = 0.2) {
@@ -129,6 +154,9 @@ public class BLEManager: NSObject, ObservableObject {
     public func requestSurvey() {
         sendCommand(action: "SURVEY")
         readSurvey()
+        Task {
+            await APIService.shared.fetchSurvey()
+        }
     }
     
     public func clearSurvey() {
@@ -303,45 +331,50 @@ extension BLEManager: CBPeripheralDelegate {
             
             // 1. Array decode
             if let networks = try? decoder.decode([WiFiNetwork].self, from: data) {
-                DispatchQueue.main.async {
-                    for net in networks {
-                        if let idx = self.surveyedNetworks.firstIndex(where: { $0.bssid == net.bssid && $0.ssid == net.ssid }) {
-                            self.surveyedNetworks[idx] = net
-                        } else {
-                            self.surveyedNetworks.append(net)
-                        }
-                    }
-                    self.appendLog("[Survey] Loaded \(networks.count) networks from initial batch.")
-                }
+                mergeSurveyNetworks(networks)
+                appendLog("[Survey] Loaded \(networks.count) networks from initial batch.")
                 return
             }
             
             // 2. Single object stream
             if let single = try? decoder.decode(WiFiNetwork.self, from: data) {
-                DispatchQueue.main.async {
-                    if let idx = self.surveyedNetworks.firstIndex(where: { $0.bssid == single.bssid && $0.ssid == single.ssid }) {
-                        self.surveyedNetworks[idx] = single
-                    } else {
-                        let isPriority = single.ssid.localizedCaseInsensitiveContains("luka") ||
-                                         single.ssid.localizedCaseInsensitiveContains("o-dev") ||
-                                         single.ssid.localizedCaseInsensitiveContains("odev")
-                        if isPriority {
-                            self.surveyedNetworks.insert(single, at: 0)
-                        } else {
-                            self.surveyedNetworks.append(single)
-                        }
-                    }
-                }
+                mergeSurveyNetworks([single])
                 return
             }
             
-            // 3. Completion packet
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                if let done = json["done"] as? Bool, done {
-                    let total = json["total"] as? Int ?? self.surveyedNetworks.count
-                    DispatchQueue.main.async {
-                        self.appendLog("[Survey] Stream completed: \(total) networks active.")
-                    }
+            // 3. Fallback: Array of raw dictionaries
+            if let rawArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                var parsedNets: [WiFiNetwork] = []
+                for item in rawArray {
+                    let ssid = item["ssid"] as? String ?? ""
+                    let bssid = item["bssid"] as? String ?? ""
+                    let channel = "\(item["channel"] ?? 1)"
+                    let sig = (item["signal"] as? Int) ?? (item["rssi"] as? Int) ?? -80
+                    let sec = (item["security"] as? String) ?? (item["crypto"] as? String) ?? "WPA2"
+                    parsedNets.append(WiFiNetwork(ssid: ssid, bssid: bssid, channel: channel, signal: sig, security: sec))
+                }
+                if !parsedNets.isEmpty {
+                    mergeSurveyNetworks(parsedNets)
+                    appendLog("[Survey] Loaded \(parsedNets.count) networks from fallback batch.")
+                    return
+                }
+            }
+            
+            // 4. Fallback: Single dictionary or Completion packet
+            if let rawDict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let done = rawDict["done"] as? Bool, done {
+                    let total = rawDict["total"] as? Int ?? self.surveyedNetworks.count
+                    appendLog("[Survey] Stream completed: \(total) networks active.")
+                    return
+                }
+                if let bssid = rawDict["bssid"] as? String, !bssid.isEmpty {
+                    let ssid = rawDict["ssid"] as? String ?? ""
+                    let channel = "\(rawDict["channel"] ?? 1)"
+                    let sig = (rawDict["signal"] as? Int) ?? (rawDict["rssi"] as? Int) ?? -80
+                    let sec = (rawDict["security"] as? String) ?? (rawDict["crypto"] as? String) ?? "WPA2"
+                    let net = WiFiNetwork(ssid: ssid, bssid: bssid, channel: channel, signal: sig, security: sec)
+                    mergeSurveyNetworks([net])
+                    return
                 }
             }
         }

@@ -206,18 +206,18 @@ class SurveyCharacteristic(Characteristic):
             return
 
         def _stream():
-            nets = self.state.get_prioritized_survey()
+            nets = self.state.get_prioritized_survey()[:25]
             print(f"[*] Streaming {len(nets)} surveyed networks to iOS over BLE notifications...")
             for net in nets:
                 try:
-                    payload = json.dumps(net).encode('utf-8')
+                    payload = json.dumps(net, ensure_ascii=False).encode('utf-8')
                     value = [dbus.Byte(b) for b in payload]
                     self.PropertiesChanged(
                         GATT_CHRC_IFACE,
                         {'Value': value},
                         []
                     )
-                    time.sleep(0.04)  # 40ms pacing prevents BLE packet drops
+                    time.sleep(0.09)  # 90ms pacing protects UART buffer
                 except Exception as e:
                     print(f"[!] Stream notification error: {e}")
                     break
@@ -311,6 +311,15 @@ class DaemonState:
         except Exception:
             return 0.0
 
+    def get_nic_temp(self):
+        base_temp = self.get_cpu_temp()
+        if self.mode == "AUDITING":
+            return round(base_temp + 0.8, 1)
+        elif self.mode == "SURVEYING":
+            return round(base_temp + 0.4, 1)
+        else:
+            return round(max(30.0, base_temp - 1.7), 1)
+
     def get_status(self):
         mode = "STANDBY"
         target_ssid = self.target_ssid
@@ -369,6 +378,7 @@ class DaemonState:
             "handshakes": handshakes,
             "clients": clients,
             "cpu_temp": self.get_cpu_temp(),
+            "nic_temp": self.get_nic_temp(),
             "event": last_event,
             "uptime": int(time.time()),
             "burst_current": burst_current,

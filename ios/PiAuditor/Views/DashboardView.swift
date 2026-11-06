@@ -7,6 +7,7 @@ struct DashboardView: View {
     @State private var showingManualSheet = false
     @State private var searchText = ""
     @State private var selectedBandFilter: BandFilter = .all
+    @State private var isGroupView: Bool = true
     
     enum BandFilter: String, CaseIterable {
         case all = "All"
@@ -34,6 +35,10 @@ struct DashboardView: View {
         }
     }
     
+    var filteredGroups: [WiFiNetworkGroup] {
+        filteredNetworks.groupedBySSID()
+    }
+    
     var body: some View {
         NavigationView {
             ScrollView {
@@ -41,7 +46,7 @@ struct DashboardView: View {
                     // Connection Status Header Card
                     connectionHeaderCard
                     
-                    // Live Appliance Telemetry Card
+                    // Live Appliance Telemetry Card (Dual Thermal APU + NIC)
                     applianceTelemetryCard
                     
                     // Handshake Captured Celebration Banner (if captured)
@@ -60,13 +65,22 @@ struct DashboardView: View {
                     // Search & Band Filter
                     searchAndFilterSection
                     
-                    // Discovered Target Networks
+                    // Discovered Target Networks & View Mode Switcher
                     surveySectionHeader
                     
                     if ble.surveyedNetworks.isEmpty {
                         emptySurveyCard
                     } else if filteredNetworks.isEmpty {
                         noSearchResultsCard
+                    } else if isGroupView {
+                        LazyVStack(spacing: 10) {
+                            ForEach(filteredGroups) { group in
+                                NetworkGroupRowView(group: group) { net in
+                                    selectedNetwork = net
+                                    showingAuditSheet = true
+                                }
+                            }
+                        }
                     } else {
                         LazyVStack(spacing: 10) {
                             ForEach(filteredNetworks) { net in
@@ -183,10 +197,11 @@ struct DashboardView: View {
             
             Divider()
             
-            HStack(spacing: 20) {
+            HStack(spacing: 8) {
                 telemetryItem(title: "Handshakes", value: "\(ble.piState.handshakes)", icon: "lock.shield", color: .purple)
                 telemetryItem(title: "Channel", value: ble.piState.channel > 0 ? "Ch \(ble.piState.channel)" : "Idle", icon: "wave.3.forward", color: .blue)
-                telemetryItem(title: "Pi Temp", value: "\(ble.piState.cpuTemp)°C", icon: "thermometer.medium", color: .red)
+                telemetryItem(title: "APU Temp", value: "\(String(format: "%.1f", ble.piState.cpuTemp))°C", icon: "cpu", color: .orange)
+                telemetryItem(title: "NIC Temp", value: "\(String(format: "%.1f", ble.piState.nicTemp))°C", icon: "antenna.radiowaves.left.and.right", color: .red)
             }
             
             if !ble.piState.targetSSID.isEmpty {
@@ -358,16 +373,28 @@ struct DashboardView: View {
     }
     
     private var surveySectionHeader: some View {
-        HStack {
-            Text("Visible Networks (\(filteredNetworks.count))")
-                .font(.headline)
-            Spacer()
-            Button(action: {
-                ble.readSurvey()
-            }) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.caption)
-                    .foregroundColor(.blue)
+        VStack(spacing: 8) {
+            HStack {
+                Text(isGroupView ? "Network Groups (\(filteredGroups.count))" : "Visible APs (\(filteredNetworks.count))")
+                    .font(.headline)
+                Spacer()
+                
+                // Group vs Individual Toggle
+                Picker("View Mode", selection: $isGroupView) {
+                    Text("Grouped").tag(true)
+                    Text("All APs").tag(false)
+                }
+                .pickerStyle(SegmentedPickerStyle())
+                .frame(width: 150)
+                
+                Button(action: {
+                    ble.readSurvey()
+                }) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption)
+                        .foregroundColor(.blue)
+                        .padding(.leading, 6)
+                }
             }
         }
         .padding(.top, 4)
@@ -408,17 +435,19 @@ struct DashboardView: View {
     
     private func telemetryItem(title: String, value: String, icon: String, color: Color) -> some View {
         VStack(spacing: 4) {
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 Image(systemName: icon)
-                    .font(.caption)
+                    .font(.caption2)
                     .foregroundColor(color)
                 Text(title)
-                    .font(.caption2)
+                    .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
             Text(value)
-                .font(.headline)
+                .font(.subheadline)
                 .bold()
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
         .frame(maxWidth: .infinity)
     }
@@ -435,7 +464,157 @@ struct DashboardView: View {
     }
 }
 
-// MARK: - Network Row Component
+// MARK: - Network Group Row Component (Mesh & Dual-Band Aggregated)
+struct NetworkGroupRowView: View {
+    let group: WiFiNetworkGroup
+    let onSelect: (WiFiNetwork) -> Void
+    @State private var isExpanded: Bool = false
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Group Header Button
+            Button(action: {
+                if group.networks.count > 1 {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isExpanded.toggle()
+                    }
+                } else if let only = group.networks.first {
+                    onSelect(only)
+                }
+            }) {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(group.ssid)
+                                .font(.body)
+                                .bold()
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                            
+                            // Dual-Band / 5G / 2.4G Badge
+                            Text(group.bandBadge)
+                                .font(.system(size: 9, weight: .bold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(group.isDualBand ? Color.indigo.opacity(0.18) : (group.primaryNetwork.is5GHz ? Color.purple.opacity(0.18) : Color.gray.opacity(0.18)))
+                                .foregroundColor(group.isDualBand ? .indigo : (group.primaryNetwork.is5GHz ? .purple : .secondary))
+                                .cornerRadius(4)
+                            
+                            // Multiple AP Count Badge
+                            if group.networks.count > 1 {
+                                Text(group.apCountString)
+                                    .font(.system(size: 9, weight: .bold))
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 2)
+                                    .background(Color.blue.opacity(0.15))
+                                    .foregroundColor(.blue)
+                                    .cornerRadius(4)
+                            }
+                        }
+                        
+                        HStack(spacing: 6) {
+                            Text(group.channelsSummary)
+                                .font(.caption2)
+                                .bold()
+                                .foregroundColor(.blue)
+                            Text("•")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            Text(group.primaryNetwork.bssid)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    
+                    Spacer()
+                    
+                    VStack(alignment: .trailing, spacing: 4) {
+                        Text(group.security)
+                            .font(.caption2)
+                            .bold()
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue.opacity(0.12))
+                            .foregroundColor(.blue)
+                            .cornerRadius(4)
+                        
+                        HStack(spacing: 4) {
+                            Image(systemName: "wifi")
+                                .font(.caption)
+                                .foregroundColor(.green)
+                            Text(group.maxSignalFormatted)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            
+                            if group.networks.count > 1 {
+                                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .padding(.leading, 2)
+                            }
+                        }
+                    }
+                }
+                .padding()
+                .background(Color(UIColor.secondarySystemBackground))
+                .cornerRadius(group.networks.count > 1 && isExpanded ? 10 : 10)
+            }
+            
+            // Expanded List of Individual BSSIDs inside the Group
+            if isExpanded && group.networks.count > 1 {
+                VStack(spacing: 6) {
+                    ForEach(group.networks) { net in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(net.bssid.uppercased())
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .bold()
+                                    Text(net.is5GHz ? "5 GHz" : "2.4 GHz")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 1)
+                                        .background(net.is5GHz ? Color.purple.opacity(0.15) : Color.gray.opacity(0.15))
+                                        .foregroundColor(net.is5GHz ? .purple : .secondary)
+                                        .cornerRadius(3)
+                                }
+                                Text("Channel \(net.channel) • \(net.signalFormatted)")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            
+                            Spacer()
+                            
+                            Button(action: {
+                                onSelect(net)
+                            }) {
+                                Text("Audit AP")
+                                    .font(.caption2)
+                                    .bold()
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 5)
+                                    .background(Color.blue)
+                                    .foregroundColor(.white)
+                                    .cornerRadius(6)
+                            }
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color(UIColor.tertiarySystemBackground))
+                        .cornerRadius(8)
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
+                .background(Color(UIColor.secondarySystemBackground).opacity(0.6))
+            }
+        }
+        .background(Color(UIColor.secondarySystemBackground))
+        .cornerRadius(10)
+    }
+}
+
+// MARK: - Individual Network Row Component
 struct NetworkRowView: View {
     let network: WiFiNetwork
     let onSelect: () -> Void

@@ -1,0 +1,1219 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pi-Auditor | Field Wireless Assessment</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <style>
+    body {
+      background-color: #0b0f19;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    }
+    .navbar {
+      background-color: #111827;
+      border-bottom: 1px solid #1f2937;
+    }
+    .card {
+      background-color: #111827;
+      border: 1px solid #1f2937;
+      border-radius: 12px;
+      margin-bottom: 1.5rem;
+    }
+    .badge-signal-good { background-color: #059669; }
+    .badge-signal-med { background-color: #d97706; }
+    .badge-signal-weak { background-color: #dc2626; }
+    .table-hover tbody tr:hover {
+      background-color: #1e293b;
+      cursor: pointer;
+    }
+    .selected-row {
+      background-color: #1e3a8a !important;
+      font-weight: 600;
+    }
+    .btn-audit {
+      background: linear-gradient(135deg, #ef4444 0%, #b91c1c 100%);
+      border: none;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      padding: 12px 24px;
+      border-radius: 8px;
+    }
+    .btn-audit:hover {
+      background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%);
+    }
+    .btn-row-start {
+      background: #dc2626;
+      border: none;
+      font-weight: 600;
+      font-size: 0.8rem;
+      padding: 4px 10px;
+      border-radius: 6px;
+      color: white;
+      white-space: nowrap;
+    }
+    .btn-row-start:hover {
+      background: #b91c1c;
+      color: white;
+    }
+    .terminal-box {
+      background-color: #030712;
+      border: 1px solid #1e293b;
+      font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 0.85rem;
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .modal-content {
+      background-color: #111827;
+      border: 1px solid #374151;
+      border-radius: 14px;
+    }
+    .metric-card {
+      background-color: #0f172a;
+      border: 1px solid #1e293b;
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .hash-box {
+      background-color: #030712;
+      border: 1px solid #334155;
+      color: #38bdf8;
+      font-family: monospace;
+      font-size: 0.82rem;
+      word-break: break-all;
+      padding: 10px;
+      border-radius: 6px;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body class="p-2 p-md-4">
+  <div class="container-fluid" style="max-width: 1280px;">
+    <!-- Top Header -->
+    <header class="d-flex flex-wrap justify-content-between align-items-center pb-3 mb-4 border-bottom border-secondary">
+      <div class="d-flex align-items-center gap-2">
+        <button id="btn-abort-nav" class="btn btn-danger btn-sm fw-bold" style="display:none;" onclick="abortAudit()"><i class="bi bi-stop-circle-fill"></i> 🛑 Stop Active Task</button>
+        <span class="fs-3 fw-bold text-primary">⚡ Pi-Auditor</span>
+        <span class="badge bg-secondary">RPi 3B+ BCM43455 (30 dBm)</span>
+        <span class="badge bg-success">Hotspot Active (192.168.4.1)</span>
+      </div>
+      <div class="d-flex align-items-center gap-2 mt-2 mt-md-0">
+        <button class="btn btn-outline-info btn-sm" onclick="triggerRescan()"><i class="bi bi-broadcast"></i> Live Re-Scan (All Bands)</button>
+        <button class="btn btn-outline-warning btn-sm" onclick="clearSurveyCache()"><i class="bi bi-trash"></i> Reset Cache</button>
+        <button class="btn btn-outline-secondary btn-sm" onclick="fetchHistory(true)"><i class="bi bi-arrow-clockwise"></i> Refresh History</button>
+      </div>
+    </header>
+
+    <!-- Live Audit Status Banner -->
+    <div id="live-audit-banner" class="alert alert-danger shadow-lg border-danger mb-4 d-none" style="background: rgba(220, 53, 69, 0.18); border-width: 2px;">
+      <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+        <div class="d-flex align-items-center gap-3">
+          <div class="spinner-grow text-danger" role="status" style="width: 2.2rem; height: 2.2rem;"></div>
+          <div>
+            <h5 class="alert-heading mb-1 text-danger fw-bold">
+              ⚡ AUDIT IN PROGRESS: <span id="banner-target-ssid" class="text-white">Target</span>
+            </h5>
+            <div class="small text-secondary font-monospace">
+              BSSID: <span id="banner-target-bssid" class="text-light fw-bold">-</span> | 
+              <span id="banner-target-ch" class="badge bg-secondary">-</span> | 
+              Phase: <span id="banner-phase" class="badge bg-warning text-dark">Initializing</span> |
+              Captured: <span id="banner-packets" class="badge bg-info text-dark">0 pkts</span>
+            </div>
+          </div>
+        </div>
+        <div class="d-flex align-items-center gap-3">
+          <div class="text-end">
+            <div class="small text-secondary">Elapsed / Window</div>
+            <div class="fs-5 fw-bold font-monospace text-warning"><span id="banner-elapsed">0</span>s / <span id="banner-timeout">75</span>s</div>
+          </div>
+          <button class="btn btn-outline-danger btn-sm px-3 fw-bold" onclick="abortAudit()">
+            🛑 Stop Audit
+          </button>
+        </div>
+      </div>
+      <div class="progress mt-3" style="height: 6px;">
+        <div id="banner-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-danger" style="width: 0%;"></div>
+      </div>
+    </div>
+
+    <!-- Latest Verification Banner -->
+    <div class="card shadow-sm border-primary" id="latest-card">
+      <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
+          <div>
+            <h5 class="card-title mb-1 text-info" id="latest-title">🔍 Capture Telemetry & Verification</h5>
+            <p class="text-secondary small mb-2" id="latest-time">Checking capture status...</p>
+          </div>
+          <div id="latest-badge">
+            <span class="badge bg-secondary p-2">Loading...</span>
+          </div>
+        </div>
+        
+        <!-- Quick Telemetry Row -->
+        <div id="latest-details" class="mt-2">
+          <p class="mb-2" id="latest-msg">Scanning captures directory...</p>
+        </div>
+        
+        <div id="latest-telemetry-row" class="row g-2 mt-2" style="display: none;">
+          <div class="col-md-3 col-6">
+            <div class="metric-card">
+              <span class="text-secondary small">Connected Clients</span>
+              <div class="fw-bold text-info" id="latest-clients-val">0 Stations</div>
+            </div>
+          </div>
+          <div class="col-md-3 col-6">
+            <div class="metric-card">
+              <span class="text-secondary small">4-Way Handshake</span>
+              <div class="fw-bold text-warning" id="latest-eapol-val">0 frames</div>
+            </div>
+          </div>
+          <div class="col-md-3 col-6">
+            <div class="metric-card">
+              <span class="text-secondary small">PMKID Telemetry</span>
+              <div class="fw-bold text-success" id="latest-pmkid-val">None</div>
+            </div>
+          </div>
+          <div class="col-md-3 col-6">
+            <div class="metric-card">
+              <span class="text-secondary small">RF Link Balance</span>
+              <div class="fw-bold" id="latest-signal-val">-- dBm</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="d-flex flex-wrap gap-2 mt-3" id="latest-actions" style="display: none !important;">
+          <button class="btn btn-info btn-sm" id="latest-inspect-btn"><i class="bi bi-search"></i> 🔍 Inspect Full Telemetry</button>
+          <a href="#" id="latest-pcap-btn" class="btn btn-outline-primary btn-sm"><i class="bi bi-download"></i> Download .PCAP</a>
+          <a href="#" id="latest-hash-btn" class="btn btn-warning btn-sm" style="display: none;"><i class="bi bi-lightning-charge"></i> Download Hashcat 22000</a>
+        </div>
+      </div>
+    </div>
+
+    <!-- Main Workflow Layout -->
+    <div class="row">
+      <!-- Target Selection Column -->
+      <div class="col-lg-7">
+        <div class="card shadow-sm h-100">
+          <div class="card-header d-flex flex-wrap justify-content-between align-items-center bg-transparent border-secondary gap-2">
+            <div class="d-flex align-items-center gap-2">
+              <h5 class="mb-0">📡 Surveyed Networks</h5>
+              <span id="survey-count" class="badge bg-secondary">0 Networks</span>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              <div class="btn-group btn-group-sm" role="group">
+                <button type="button" class="btn btn-outline-info active" id="btn-group-ssid" onclick="setGroupingMode(true)" title="Collapse duplicate APs sharing the same SSID">🗂️ Group SSIDs</button>
+                <button type="button" class="btn btn-outline-secondary" id="btn-show-all" onclick="setGroupingMode(false)" title="Show every BSSID individually">📋 Show All</button>
+              </div>
+              <input type="text" id="search-input" class="form-control form-control-sm w-auto" placeholder="Filter SSID or BSSID..." onkeyup="filterNetworks()">
+            </div>
+          </div>
+          <div class="card-body p-0 table-responsive" style="max-height: 480px; overflow-y: auto;">
+            <table class="table table-hover align-middle mb-0" id="networks-table">
+              <thead class="table-dark sticky-top">
+                <tr>
+                  <th>SSID</th>
+                  <th>Band</th>
+                  <th>BSSID</th>
+                  <th>CH</th>
+                  <th>RSSI</th>
+                  <th>Security</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="networks-tbody">
+                <tr><td colspan="6" class="text-center py-4 text-secondary">Loading surveyed networks...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- Action & Manual Setup Column -->
+      <div class="col-lg-5 mt-3 mt-lg-0">
+        <div class="card shadow-sm border-danger">
+          <div class="card-header bg-danger bg-opacity-10 border-danger text-danger fw-bold">
+            🎯 Target Configuration & Execution
+          </div>
+          <div class="card-body">
+            <form id="audit-form" onsubmit="startAudit(event)">
+              <div class="mb-3">
+                <label class="form-label small text-secondary">Target SSID</label>
+                <input type="text" class="form-control" id="target-ssid" placeholder="e.g. mk ko cho dau" required>
+              </div>
+              <div class="mb-3">
+                <label class="form-label small text-secondary">Target BSSID (MAC)</label>
+                <input type="text" class="form-control font-monospace" id="target-bssid" placeholder="8A:A5:90:C1:77:4F" required>
+              </div>
+              <div class="row mb-3">
+                <div class="col-6">
+                  <label class="form-label small text-secondary">Channel</label>
+                  <input type="number" class="form-control" id="target-channel" min="1" max="165" value="11" required>
+                </div>
+                <div class="col-6">
+                  <label class="form-label small text-secondary">Deauth Bursts</label>
+                  <select class="form-select" id="deauth-bursts">
+                    <option value="3" selected>3 Gentle Bursts (Paced)</option>
+                    <option value="5">5 Bursts</option>
+                    <option value="1">1 Burst (Minimal)</option>
+                    <option value="0">0 (100% Passive)</option>
+                    <option value="-1">🔥 Continuous Stream (On-Demand Test)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="terminal-box mb-3">
+                <div class="text-warning fw-bold mb-1">⚡ Autonomous Capture & Auto-Return:</div>
+                <ul class="mb-0 ps-3 small text-secondary">
+                  <li>Clicking <strong>Start</strong> initiates clientless PMKID probe + paced deauth.</li>
+                  <li>Radio captures unbuffered to flash with 30 dBm sensitivity.</li>
+                  <li><strong>Auto-Return:</strong> As soon as a handshake/PMKID is secured, the auditor automatically saves the capture and restores this web portal!</li>
+                  <li>Or pull power at any time — data is always synced to disk.</li>
+                </ul>
+              </div>
+
+              <button type="submit" id="btn-start" class="btn btn-audit w-100 text-white shadow">
+                🚀 START CAPTURE & PACED DEAUTH
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Historical Captures Archive -->
+    <div class="card shadow-sm mt-4">
+      <div class="card-header bg-transparent border-secondary d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0 text-secondary">📁 Captures Archive & Telemetry Browser</h5>
+          <small class="text-secondary">Click on any capture row or click "Inspect" to view detailed station signals, PMKID, and EAPOL breakdown</small>
+        </div>
+        <span class="badge bg-dark fs-6" id="history-count">0 captures</span>
+      </div>
+      <div class="card-body p-0 table-responsive">
+        <table class="table table-hover align-middle mb-0">
+          <thead class="table-dark">
+            <tr>
+              <th>Date & Time</th>
+              <th>Target Network</th>
+              <th>Size / Pkts</th>
+              <th>Stations (Clients)</th>
+              <th>EAPOL & PMKID</th>
+              <th>Status / Password</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="history-tbody">
+            <tr><td colspan="7" class="text-center py-4 text-secondary">Loading history...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Telemetry Inspector Modal -->
+  <div class="modal fade" id="inspectModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header border-secondary pb-2">
+          <div>
+            <h5 class="modal-title fw-bold text-info" id="insp-title">🔍 Capture Telemetry Inspector</h5>
+            <small class="text-secondary font-monospace" id="insp-filename">filename.pcap</small>
+          </div>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body p-3 p-md-4">
+          <!-- Cracked Password Alert (if cracked) -->
+          <div id="insp-cracked-banner" class="alert alert-success d-flex align-items-center justify-content-between flex-wrap gap-2" style="display: none;">
+            <div class="d-flex align-items-center gap-2">
+              <span class="fs-3">🔓</span>
+              <div>
+                <strong class="fs-5">CRACKED PASSWORD:</strong>
+                <span class="font-monospace fs-4 ms-2 fw-bold text-white px-2 py-1 bg-dark rounded" id="insp-password-val">password</span>
+              </div>
+            </div>
+            <button class="btn btn-outline-light btn-sm" onclick="copyPassword()"><i class="bi bi-clipboard"></i> Copy Password</button>
+          </div>
+
+          <!-- Target & File Overview Row -->
+          <div class="row g-3 mb-3">
+            <div class="col-md-3 col-6">
+              <div class="metric-card">
+                <span class="text-secondary small">Target SSID</span>
+                <div class="fw-bold text-light fs-5 text-truncate" id="insp-ssid">Unknown</div>
+              </div>
+            </div>
+            <div class="col-md-3 col-6">
+              <div class="metric-card">
+                <span class="text-secondary small">BSSID / Channel</span>
+                <div class="fw-bold text-info font-monospace" id="insp-bssid">00:00:00:00:00:00</div>
+              </div>
+            </div>
+            <div class="col-md-3 col-6">
+              <div class="metric-card">
+                <span class="text-secondary small">Packets / Duration</span>
+                <div class="fw-bold text-light" id="insp-packets">0 pkts (0m:00s)</div>
+              </div>
+            </div>
+            <div class="col-md-3 col-6">
+              <div class="metric-card">
+                <span class="text-secondary small">Verification Status</span>
+                <div id="insp-status-badge"><span class="badge bg-secondary">Checking...</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Stations & RF Signal Balance -->
+          <div class="row g-3 mb-3">
+            <div class="col-lg-7">
+              <div class="card h-100 mb-0 border-secondary">
+                <div class="card-header bg-dark border-secondary py-2 d-flex justify-content-between align-items-center">
+                  <span class="fw-bold text-light">📱 Connected Stations (Clients)</span>
+                  <span class="badge bg-primary" id="insp-stations-count">0 Detected</span>
+                </div>
+                <div class="card-body p-0 table-responsive">
+                  <table class="table table-sm table-hover align-middle mb-0">
+                    <thead class="table-dark">
+                      <tr>
+                        <th>Station MAC</th>
+                        <th>Role</th>
+                        <th>Signal RSSI</th>
+                        <th>EAPOL Exchanged</th>
+                      </tr>
+                    </thead>
+                    <tbody id="insp-stations-tbody">
+                      <tr><td colspan="4" class="text-center py-3 text-secondary">No client stations detected.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <div class="col-lg-5">
+              <div class="card h-100 mb-0 border-secondary">
+                <div class="card-header bg-dark border-secondary py-2">
+                  <span class="fw-bold text-light">📶 RF Signal Balance & Health</span>
+                </div>
+                <div class="card-body">
+                  <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-secondary">Router (AP) Signal:</span>
+                    <span class="fw-bold" id="insp-ap-signal">-45 dBm</span>
+                  </div>
+                  <div class="d-flex justify-content-between align-items-center mb-2">
+                    <span class="text-secondary">Station (Client) Signal:</span>
+                    <span class="fw-bold" id="insp-client-signal">-38 dBm</span>
+                  </div>
+                  <div class="d-flex justify-content-between align-items-center mb-3">
+                    <span class="text-secondary">Signal Asymmetry (Δ):</span>
+                    <span class="badge bg-success" id="insp-signal-delta">4 dB (Balanced)</span>
+                  </div>
+                  <hr class="border-secondary my-2">
+                  <div class="d-flex justify-content-between align-items-center text-secondary small">
+                    <span>Deauths / Disassocs Fired:</span>
+                    <span class="font-monospace text-warning" id="insp-deauth-counts">85 / 81</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 4-Way Handshake & PMKID Breakdown Cards -->
+          <div class="card mb-3 border-secondary">
+            <div class="card-header bg-dark border-secondary py-2 d-flex justify-content-between align-items-center">
+              <span class="fw-bold text-light">🔑 EAPOL Protocol Telemetry & PMKID</span>
+              <span class="badge bg-info" id="insp-rc-status">Replay Counter: OK</span>
+            </div>
+            <div class="card-body">
+              <div class="row g-2 text-center">
+                <div class="col-3">
+                  <div class="p-2 border border-secondary rounded bg-dark">
+                    <div class="small text-secondary">Message 1</div>
+                    <div class="fs-4 fw-bold text-info" id="insp-m1">0</div>
+                    <div class="small text-secondary" style="font-size: 0.72rem;">AP ➔ Client (ANonce)</div>
+                  </div>
+                </div>
+                <div class="col-3">
+                  <div class="p-2 border border-secondary rounded bg-dark">
+                    <div class="small text-secondary">Message 2</div>
+                    <div class="fs-4 fw-bold text-warning" id="insp-m2">0</div>
+                    <div class="small text-secondary" style="font-size: 0.72rem;">Client ➔ AP (SNonce+MIC)</div>
+                  </div>
+                </div>
+                <div class="col-3">
+                  <div class="p-2 border border-secondary rounded bg-dark">
+                    <div class="small text-secondary">Message 3</div>
+                    <div class="fs-4 fw-bold text-primary" id="insp-m3">0</div>
+                    <div class="small text-secondary" style="font-size: 0.72rem;">AP ➔ Client (GTK)</div>
+                  </div>
+                </div>
+                <div class="col-3">
+                  <div class="p-2 border border-secondary rounded bg-dark">
+                    <div class="small text-secondary">Message 4</div>
+                    <div class="fs-4 fw-bold text-success" id="insp-m4">0</div>
+                    <div class="small text-secondary" style="font-size: 0.72rem;">Client ➔ AP (Ack)</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="mt-3 p-2 rounded bg-dark border border-secondary d-flex justify-content-between align-items-center flex-wrap gap-2">
+                <div class="d-flex align-items-center gap-2">
+                  <span class="badge bg-warning text-dark"><i class="bi bi-key-fill"></i> PMKID Status</span>
+                  <span class="small" id="insp-pmkid-text">No PMKID advertised by AP</span>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                  <span class="badge bg-primary">EAPOL Pairs</span>
+                  <span class="small" id="insp-pairs-text">0 Valid Pairs</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Hashcat Mode 22000 Export Card -->
+          <div class="card mb-3 border-warning" id="insp-hashcat-card">
+            <div class="card-header bg-warning bg-opacity-10 border-warning text-warning fw-bold py-2 d-flex justify-content-between align-items-center">
+              <span>⚡ Hashcat Mode 22000 Ready for GPU</span>
+              <button class="btn btn-warning btn-sm py-0 px-2 fw-bold" onclick="copyHashcatHash()"><i class="bi bi-clipboard"></i> Copy Hash</button>
+            </div>
+            <div class="card-body">
+              <div class="hash-box mb-2" id="insp-hash-string">WPA*02*...</div>
+              <div class="d-flex gap-2 flex-wrap">
+                <a href="#" id="insp-dl-hash-btn" class="btn btn-warning btn-sm"><i class="bi bi-download"></i> Download .22000</a>
+                <a href="#" id="insp-dl-pcap-btn" class="btn btn-outline-primary btn-sm"><i class="bi bi-download"></i> Download .PCAP</a>
+              </div>
+              <div class="terminal-box mt-3 small">
+                <span class="text-secondary"># Run on your AMD Radeon GPU:</span><br>
+                <code class="text-info" id="insp-cmd-sample">.\hashcat.exe -m 22000 -d 1 hash.22000 rockyou.txt</code>
+              </div>
+            </div>
+          </div>
+
+          <!-- Save / Edit Cracked Password Option -->
+          <div class="card mb-0 border-secondary">
+            <div class="card-header bg-dark border-secondary py-2">
+              <span class="fw-bold text-light">💾 Save Cracked Password to Database</span>
+            </div>
+            <div class="card-body">
+              <form class="row g-2 align-items-center" onsubmit="saveCrackedPassword(event)">
+                <div class="col-md-8">
+                  <input type="text" class="form-control form-control-sm font-monospace" id="insp-input-pwd" placeholder="Enter cracked password for this network...">
+                </div>
+                <div class="col-md-4">
+                  <button type="submit" class="btn btn-success btn-sm w-100"><i class="bi bi-check-circle"></i> Save to Pi Database</button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Launching Modal -->
+  <div class="modal fade" id="launchModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content bg-dark border-danger">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title text-danger">⚠️ Autonomous Audit Initiated</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body text-center py-4">
+          <div class="spinner-border text-danger mb-3" style="width: 3rem; height: 3rem;"></div>
+          <h5 id="modal-target-title">Targeting Network...</h5>
+          <p class="text-secondary small mt-2">
+            The Pi radio is locking onto the target channel to capture the handshake & PMKID.<br>
+            <span class="text-warning">📡 Radio Notice:</span> Because the Pi 3B+ has a single Wi-Fi radio, the <code>Pi-Auditor</code> hotspot temporarily pauses while sniffing target channels and auto-restores once captured.<br>
+            <strong>Auto-Return Active:</strong> The auditor will automatically restore this portal upon capturing a handshake or after the 75s window!
+          </p>
+          <button type="button" class="btn btn-outline-secondary btn-sm mt-2" data-bs-dismiss="modal">
+            Dismiss & Track Live on Dashboard
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Re-scan Modal -->
+  <div class="modal fade" id="rescanModal" data-bs-backdrop="static" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content bg-dark border-info">
+        <div class="modal-header border-secondary">
+          <h5 class="modal-title text-info">📡 Scanning Wireless Environment</h5>
+        </div>
+        <div class="modal-body text-center py-4">
+          <div class="spinner-border text-info mb-3" style="width: 3rem; height: 3rem;"></div>
+          <h5>Sweeping Channels 1 to 11...</h5>
+          <p class="text-secondary small mt-2">
+            The Pi's radio is sweeping all Wi-Fi channels to detect local networks.<br>
+            The hotspot will momentarily cycle. Reconnecting automatically in:<br>
+            <span class="fs-3 fw-bold text-info" id="rescan-countdown">14s</span>
+          </p>
+          <div class="progress mt-3" style="height: 6px;">
+            <div id="rescan-progress" class="progress-bar progress-bar-striped progress-bar-animated bg-info" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    let surveyedNetworks = [];
+    let currentInspectedData = null;
+
+    async function triggerRescan() {
+      const modal = new bootstrap.Modal(document.getElementById('rescanModal'));
+      modal.show();
+      
+      let duration = 14;
+      try {
+        const res = await fetch('/api/rescan', { method: 'POST' });
+        const data = await res.json();
+        if (data && data.duration) duration = data.duration;
+      } catch (e) {
+        console.warn(e);
+      }
+
+      let remaining = duration;
+      const cdElem = document.getElementById('rescan-countdown');
+      const pbElem = document.getElementById('rescan-progress');
+      if (cdElem) cdElem.innerText = remaining + 's';
+      if (pbElem) pbElem.style.width = '0%';
+      
+      const timer = setInterval(() => {
+        remaining--;
+        if (cdElem) cdElem.innerText = remaining + 's';
+        if (pbElem) pbElem.style.width = Math.min(100, Math.round(((duration - remaining) / duration) * 100)) + '%';
+        
+        if (remaining <= 0) {
+          clearInterval(timer);
+          pollForReconnect(modal);
+        }
+      }, 1000);
+    }
+
+    async function pollForReconnect(modal) {
+      const cdElem = document.getElementById('rescan-countdown');
+      if (cdElem) cdElem.innerText = 'Reconnecting...';
+      
+      let attempts = 0;
+      const pollInterval = setInterval(async () => {
+        attempts++;
+        try {
+          const res = await fetch('/api/survey', { cache: 'no-store' });
+          if (res.status === 200) {
+            const data = await res.json();
+            if (Array.isArray(data) && data.length > 0) {
+              clearInterval(pollInterval);
+              surveyedNetworks = data;
+              renderNetworks(surveyedNetworks);
+              modal.hide();
+              return;
+            }
+          }
+        } catch (e) {
+          if (attempts > 20) {
+            clearInterval(pollInterval);
+            modal.hide();
+            window.location.reload();
+          }
+        }
+      }, 1500);
+    }
+
+    // Default to Show All (false) so operators see every physical AP radio
+    let isGroupedBySSID = localStorage.getItem('isGroupedBySSID') === 'true';
+
+    function updateGroupingButtons() {
+      const btnGroup = document.getElementById('btn-group-ssid');
+      const btnAll = document.getElementById('btn-show-all');
+      if (btnGroup && btnAll) {
+        btnGroup.classList.toggle('active', isGroupedBySSID);
+        btnGroup.classList.toggle('btn-info', isGroupedBySSID);
+        btnGroup.classList.toggle('btn-outline-secondary', !isGroupedBySSID);
+
+        btnAll.classList.toggle('active', !isGroupedBySSID);
+        btnAll.classList.toggle('btn-info', !isGroupedBySSID);
+        btnAll.classList.toggle('btn-outline-secondary', isGroupedBySSID);
+      }
+    }
+
+    function setGroupingMode(grouped) {
+      isGroupedBySSID = grouped;
+      localStorage.setItem('isGroupedBySSID', grouped);
+      updateGroupingButtons();
+      filterNetworks();
+    }
+
+    async function clearSurveyCache() {
+      if (!confirm('Clear cumulative survey cache and trigger fresh scan?')) return;
+      try {
+        await fetch('/api/survey/clear', { method: 'POST' });
+        surveyedNetworks = [];
+        renderNetworks([]);
+        triggerRescan();
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    async function fetchSurvey() {
+      try {
+        const res = await fetch('/api/survey');
+        surveyedNetworks = await res.json();
+        renderNetworks(surveyedNetworks);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderNetworks(networks) {
+      const tbody = document.getElementById('networks-tbody');
+      const countBadge = document.getElementById('survey-count');
+      if (!networks || networks.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-secondary">No networks found in initial survey.</td></tr>';
+        if (countBadge) countBadge.textContent = '0 Networks';
+        return;
+      }
+
+      // Count unique SSIDs
+      const uniqueSsids = new Set(networks.map(n => n.ssid).filter(s => s && s !== '<Hidden>'));
+
+      tbody.innerHTML = '';
+
+      if (isGroupedBySSID) {
+        // Group multiple BSSIDs broadcasting the same SSID
+        const groups = {};
+        const hiddenList = [];
+        networks.forEach(n => {
+          if (!n.ssid || n.ssid === '<Hidden>') {
+            hiddenList.push(n);
+          } else {
+            if (!groups[n.ssid]) groups[n.ssid] = [];
+            groups[n.ssid].push(n);
+          }
+        });
+
+        const itemsToRender = [];
+        Object.keys(groups).forEach(ssid => {
+          const group = groups[ssid].sort((a, b) => b.rssi - a.rssi);
+          const primary = group[0];
+          const has24 = group.some(item => (item.channel || 1) <= 14);
+          const has5 = group.some(item => (item.channel || 1) > 14);
+          let bandLabel = (primary.channel || 1) <= 14 ? '2.4 GHz' : '5 GHz';
+          let bandClass = (primary.channel || 1) <= 14 ? 'bg-warning text-dark' : 'bg-info text-dark';
+          if (has24 && has5) {
+            bandLabel = 'Dual-Band';
+            bandClass = 'bg-primary text-light';
+          }
+          itemsToRender.push({
+            primary: primary,
+            group: group,
+            isGroup: group.length > 1,
+            bandLabel: bandLabel,
+            bandClass: bandClass,
+            ssid: ssid,
+            rssi: primary.rssi
+          });
+        });
+
+        // Add hidden networks individually
+        hiddenList.forEach(n => {
+          const bandLabel = (n.channel || 1) <= 14 ? '2.4 GHz' : '5 GHz';
+          const bandClass = (n.channel || 1) <= 14 ? 'bg-warning text-dark' : 'bg-info text-dark';
+          itemsToRender.push({
+            primary: n,
+            group: [n],
+            isGroup: false,
+            bandLabel: bandLabel,
+            bandClass: bandClass,
+            ssid: '<Hidden>',
+            rssi: n.rssi
+          });
+        });
+
+        itemsToRender.sort((a, b) => b.rssi - a.rssi);
+
+        if (countBadge) {
+          countBadge.textContent = `${itemsToRender.length} Grouped SSIDs (${networks.length} Total Radios)`;
+        }
+
+        itemsToRender.forEach((item, idx) => {
+          const n = item.primary;
+          let badgeClass = 'badge-signal-weak';
+          if (n.rssi >= -60) badgeClass = 'badge-signal-good';
+          else if (n.rssi >= -75) badgeClass = 'badge-signal-med';
+
+          const tr = document.createElement('tr');
+          tr.addEventListener('click', (e) => {
+            if (!e.target.closest('button') && !e.target.closest('select')) {
+              selectNetwork(n, tr);
+            }
+          });
+
+          let apsBadge = '';
+          if (item.isGroup) {
+            const chList = item.group.map(g => `CH ${g.channel} (${g.rssi}dBm)`).join(', ');
+            apsBadge = `<span class="badge bg-dark border border-info text-info ms-2" title="${item.group.length} APs: ${chList}">📡 ${item.group.length} APs</span>`;
+          }
+
+          tr.innerHTML = `
+            <td>
+              <span class="fw-bold text-light">${escapeHtml(item.ssid)}</span>
+              ${apsBadge}
+            </td>
+            <td><span class="badge ${item.bandClass}">${item.bandLabel}</span></td>
+            <td class="font-monospace text-secondary small">${n.bssid}</td>
+            <td><span class="badge bg-secondary">CH ${n.channel}</span></td>
+            <td><span class="badge ${badgeClass}">${n.rssi} dBm</span></td>
+            <td><span class="badge bg-dark border border-secondary">${n.crypto}</span></td>
+            <td>
+              <button type="button" class="btn btn-row-start">
+                🎯 Audit
+              </button>
+            </td>
+          `;
+          const btn = tr.querySelector('.btn-row-start');
+          if (btn) {
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              quickStartTarget(item.ssid, n.bssid, n.channel || 1);
+            });
+          }
+          tbody.appendChild(tr);
+          if (idx === 0) selectNetwork(n, tr);
+        });
+
+      } else {
+        // Show all BSSIDs individually
+        if (countBadge) {
+          countBadge.textContent = `${networks.length} Radios (${uniqueSsids.size} Unique SSIDs)`;
+        }
+
+        networks.forEach((n, idx) => {
+          let badgeClass = 'badge-signal-weak';
+          if (n.rssi >= -60) badgeClass = 'badge-signal-good';
+          else if (n.rssi >= -75) badgeClass = 'badge-signal-med';
+
+          const bandLabel = (n.channel || 1) <= 14 ? '2.4 GHz' : '5 GHz';
+          const bandClass = (n.channel || 1) <= 14 ? 'bg-warning text-dark' : 'bg-info text-dark';
+
+          const tr = document.createElement('tr');
+          tr.addEventListener('click', (e) => {
+            if (!e.target.closest('button')) {
+              selectNetwork(n, tr);
+            }
+          });
+          tr.innerHTML = `
+            <td class="fw-bold text-light">${escapeHtml(n.ssid)}</td>
+            <td><span class="badge ${bandClass}">${bandLabel}</span></td>
+            <td class="font-monospace text-secondary small">${n.bssid}</td>
+            <td><span class="badge bg-secondary">CH ${n.channel}</span></td>
+            <td><span class="badge ${badgeClass}">${n.rssi} dBm</span></td>
+            <td><span class="badge bg-dark border border-secondary">${n.crypto}</span></td>
+            <td>
+              <button type="button" class="btn btn-row-start">
+                🎯 Audit
+              </button>
+            </td>
+          `;
+          const btn = tr.querySelector('.btn-row-start');
+          if (btn) {
+            btn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              quickStartTarget(n.ssid, n.bssid, n.channel || 1);
+            });
+          }
+          tbody.appendChild(tr);
+          if (idx === 0) selectNetwork(n, tr);
+        });
+      }
+    }
+
+    function filterNetworks() {
+      const q = document.getElementById('search-input').value.toLowerCase();
+      const filtered = surveyedNetworks.filter(n => n.ssid.toLowerCase().includes(q) || n.bssid.toLowerCase().includes(q));
+      renderNetworks(filtered);
+    }
+
+    function selectNetwork(n, tr) {
+      document.querySelectorAll('#networks-tbody tr').forEach(row => row.classList.remove('selected-row'));
+      if (tr) tr.classList.add('selected-row');
+
+      document.getElementById('target-ssid').value = n.ssid === '<Hidden>' ? '' : n.ssid;
+      document.getElementById('target-bssid').value = n.bssid;
+      document.getElementById('target-channel').value = n.channel || 1;
+    }
+
+    function quickStartTarget(ssid, bssid, channel) {
+      document.getElementById('target-ssid').value = ssid === '&lt;Hidden&gt;' ? '' : ssid;
+      document.getElementById('target-bssid').value = bssid;
+      document.getElementById('target-channel').value = channel;
+      executeAudit(ssid, bssid, channel, 3);
+    }
+
+    async function fetchHistory(isManual = false) {
+      try {
+        const res = await fetch('/api/history' + (isManual ? '?refresh=1' : ''));
+        const history = await res.json();
+        renderHistory(history);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function renderHistory(history) {
+      const tbody = document.getElementById('history-tbody');
+      document.getElementById('history-count').innerText = `${history.length} captures`;
+      if (!history || history.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-secondary">No captures recorded yet.</td></tr>';
+        return;
+      }
+
+      // Render top latest card
+      const latest = history[0];
+      const latestBadge = document.getElementById('latest-badge');
+      const latestMsg = document.getElementById('latest-msg');
+      const latestTime = document.getElementById('latest-time');
+      const latestActions = document.getElementById('latest-actions');
+      const latestTelRow = document.getElementById('latest-telemetry-row');
+      const pcapBtn = document.getElementById('latest-pcap-btn');
+      const hashBtn = document.getElementById('latest-hash-btn');
+      const inspectBtn = document.getElementById('latest-inspect-btn');
+
+      latestTime.innerText = `Most Recent: ${latest.filename} (${latest.time_str})`;
+      
+      let statusHtml = '';
+      if (latest.cracked) {
+        statusHtml = `<span class="badge bg-success p-2 fs-6">🔓 CRACKED: ${latest.password}</span>`;
+        latestMsg.innerHTML = `<strong>Password Cracked:</strong> <code>${latest.password}</code> for target <strong>${escapeHtml(latest.ssid || 'Target')}</strong>!`;
+      } else if (latest.has_handshake) {
+        statusHtml = '<span class="badge bg-success p-2 fs-6">🟢 HANDSHAKE READY</span>';
+        latestMsg.innerHTML = `<strong>Valid WPA Handshake / PMKID</strong> secured for <strong>${escapeHtml(latest.ssid || 'Target')}</strong> (${latest.size}). Ready for GPU!`;
+      } else {
+        statusHtml = '<span class="badge bg-warning text-dark p-2 fs-6">🟡 PASSIVE DATA</span>';
+        latestMsg.innerHTML = `Capture <code>${latest.filename}</code> saved (${latest.size}, ${latest.eapol_count || 0} EAPOL frames).`;
+      }
+      latestBadge.innerHTML = statusHtml;
+
+      // Fill latest telemetry pills
+      latestTelRow.style.display = 'flex';
+      document.getElementById('latest-clients-val').innerText = `${latest.clients_count || 0} Station(s)`;
+      document.getElementById('latest-eapol-val').innerText = `M1:${latest.m1_count||0} M2:${latest.m2_count||0} M3:${latest.m3_count||0} M4:${latest.m4_count||0}`;
+      document.getElementById('latest-pmkid-val').innerText = latest.has_pmkid ? '1 PMKID Present' : 'No PMKID';
+      document.getElementById('latest-signal-val').innerText = `AP: ${latest.ap_signal||'--'} | STA: ${latest.client_signal||'--'} dBm`;
+
+      latestActions.style.display = 'flex';
+      pcapBtn.href = `/download/pcap/${latest.filename}`;
+      inspectBtn.onclick = () => openInspectModal(latest.filename);
+
+      if (latest.has_22000) {
+        hashBtn.style.display = 'inline-block';
+        hashBtn.href = `/download/hashcat/${latest.hashcat_file}`;
+      } else {
+        hashBtn.style.display = 'none';
+      }
+
+      // Render table
+      tbody.innerHTML = '';
+      history.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.onclick = (e) => {
+          if (e.target.tagName !== 'A' && e.target.tagName !== 'BUTTON') {
+            openInspectModal(item.filename);
+          }
+        };
+
+        let statusBadge = '';
+        if (item.is_active) {
+          tr.className = 'table-danger bg-opacity-10 border-danger';
+          statusBadge = '<span class="badge bg-danger"><span class="spinner-grow spinner-grow-sm me-1"></span> RECORDING (LIVE)</span>';
+        } else if (item.cracked) {
+          statusBadge = `<span class="badge bg-success fw-bold">🔓 ${escapeHtml(item.password)}</span>`;
+        } else if (item.has_handshake) {
+          statusBadge = '<span class="badge bg-success">🟢 Handshake Ready</span>';
+        } else {
+          statusBadge = '<span class="badge bg-secondary">Passive Only</span>';
+        }
+
+        let pmkidBadge = item.has_pmkid ? '<span class="badge bg-warning text-dark ms-1">🔑 PMKID</span>' : '';
+        let clientsBadge = item.clients_count > 0 ? 
+          `<span class="badge bg-info text-dark">${item.clients_count} STA (${item.client_signal||'-'} dBm)</span>` : 
+          `<span class="badge bg-secondary">0 STA</span>`;
+
+        let eapolPill = `<span class="badge bg-dark">${item.eapol_count||0} frames</span>`;
+
+        let dlHash = item.has_22000 ? 
+          `<a href="/download/hashcat/${item.hashcat_file}" class="btn btn-warning btn-sm py-0 px-2 ms-1">⚡ 22000</a>` : '';
+
+        tr.innerHTML = `
+          <td class="small text-secondary text-nowrap">${item.time_str}</td>
+          <td>
+            <div class="fw-bold text-light">${escapeHtml(item.ssid || item.filename)}</div>
+            <small class="font-monospace text-secondary">${item.bssid || 'CH ' + item.channel}</small>
+          </td>
+          <td class="small">${item.size}<br><span class="text-secondary">${item.packets || ''} pkts</span></td>
+          <td>${clientsBadge}</td>
+          <td>${eapolPill} ${pmkidBadge}</td>
+          <td>${statusBadge}</td>
+          <td class="text-nowrap">
+            <button class="btn btn-outline-info btn-sm py-0 px-2" onclick="openInspectModal('${item.filename}')"><i class="bi bi-search"></i> Inspect</button>
+            <a href="/download/pcap/${item.filename}" class="btn btn-outline-primary btn-sm py-0 px-2 ms-1">📥 PCAP</a>
+            ${dlHash}
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function openInspectModal(filename) {
+      const modal = new bootstrap.Modal(document.getElementById('inspectModal'));
+      modal.show();
+
+      document.getElementById('insp-filename').innerText = filename;
+      document.getElementById('insp-title').innerText = `🔍 Capture Telemetry: ${filename}`;
+      document.getElementById('insp-ssid').innerText = 'Loading...';
+      document.getElementById('insp-bssid').innerText = '--';
+      document.getElementById('insp-packets').innerText = '--';
+      document.getElementById('insp-status-badge').innerHTML = '<span class="spinner-border spinner-border-sm text-info"></span>';
+      document.getElementById('insp-cracked-banner').style.display = 'none';
+      document.getElementById('insp-hashcat-card').style.display = 'none';
+
+      try {
+        const res = await fetch(`/api/inspect/${filename}`);
+        const data = await res.json();
+        currentInspectedData = data;
+        renderInspectModal(data);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function renderInspectModal(data) {
+      document.getElementById('insp-ssid').innerText = data.ssid || 'Unknown';
+      document.getElementById('insp-bssid').innerText = `${data.bssid} (CH ${data.channel})`;
+      document.getElementById('insp-packets').innerText = `${(data.packets||0).toLocaleString()} pkts (${data.duration||'N/A'})`;
+
+      // Verification Badge
+      let badgeHtml = '';
+      if (data.cracked) {
+        badgeHtml = `<span class="badge bg-success fs-6">🔓 Cracked: ${data.password}</span>`;
+      } else if (data.has_handshake) {
+        badgeHtml = `<span class="badge bg-success fs-6">🟢 Handshake Ready</span>`;
+      } else {
+        badgeHtml = `<span class="badge bg-secondary fs-6">🟡 Passive Only</span>`;
+      }
+      document.getElementById('insp-status-badge').innerHTML = badgeHtml;
+
+      // Cracked Banner
+      const crackedBanner = document.getElementById('insp-cracked-banner');
+      if (data.cracked) {
+        crackedBanner.style.display = 'flex';
+        document.getElementById('insp-password-val').innerText = data.password;
+      } else {
+        crackedBanner.style.display = 'none';
+      }
+
+      // Pre-fill input password form
+      document.getElementById('insp-input-pwd').value = data.password || '';
+
+      // Stations (Clients) Table
+      const stTbody = document.getElementById('insp-stations-tbody');
+      const stCount = document.getElementById('insp-stations-count');
+      stCount.innerText = `${data.clients_count || 0} Detected`;
+
+      if (data.clients && data.clients.length > 0) {
+        stTbody.innerHTML = '';
+        data.clients.forEach(c => {
+          let sClass = 'text-danger';
+          if (c.signal >= -60) sClass = 'text-success';
+          else if (c.signal >= -75) sClass = 'text-warning';
+
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td class="font-monospace fw-bold text-info">${c.mac}</td>
+            <td><span class="badge bg-secondary">${c.role || 'Station'}</span></td>
+            <td class="fw-bold ${sClass}">${c.signal} dBm</td>
+            <td><span class="badge bg-dark">${c.packets || 1} frames</span></td>
+          `;
+          stTbody.appendChild(tr);
+        });
+      } else {
+        stTbody.innerHTML = '<tr><td colspan="4" class="text-center py-3 text-secondary">No client stations participated in EAPOL.</td></tr>';
+      }
+
+      // RF Signals & Balance
+      document.getElementById('insp-ap-signal').innerText = `${data.ap_signal || '--'} dBm`;
+      document.getElementById('insp-client-signal').innerText = `${data.client_signal || '--'} dBm`;
+      
+      const deltaBadge = document.getElementById('insp-signal-delta');
+      const delta = data.signal_delta || 0;
+      deltaBadge.innerText = `${delta} dB (${delta <= 10 ? 'Balanced' : 'High Asymmetry'})`;
+      deltaBadge.className = delta <= 10 ? 'badge bg-success' : 'badge bg-warning text-dark';
+
+      document.getElementById('insp-deauth-counts').innerText = `${data.deauths || 0} deauths / ${data.disassocs || 0} disassocs`;
+
+      // 4-Way Sequence Breakdown
+      document.getElementById('insp-m1').innerText = data.m1_count || 0;
+      document.getElementById('insp-m2').innerText = data.m2_count || 0;
+      document.getElementById('insp-m3').innerText = data.m3_count || 0;
+      document.getElementById('insp-m4').innerText = data.m4_count || 0;
+
+      document.getElementById('insp-rc-status').innerText = data.rc_checked ? 'Replay Counter: Valid Pair (RC Checked)' : 'Replay Counter: Pending Pair';
+      document.getElementById('insp-rc-status').className = data.rc_checked ? 'badge bg-success' : 'badge bg-secondary';
+
+      document.getElementById('insp-pmkid-text').innerText = data.has_pmkid ? 
+        `🔑 ${data.pmkid_count || 1} RSN PMKID Extracted (Clientless Candidate)` : 
+        'No PMKID advertised by AP';
+
+      document.getElementById('insp-pairs-text').innerText = `${data.eapol_pairs || 0} Valid EAPOL Pair(s)`;
+
+      // Hashcat Mode 22000 Card
+      const hashCard = document.getElementById('insp-hashcat-card');
+      if (data.has_22000 && data.hash_string) {
+        hashCard.style.display = 'block';
+        document.getElementById('insp-hash-string').innerText = data.hash_string;
+        document.getElementById('insp-dl-hash-btn').href = `/download/hashcat/${data.hashcat_file}`;
+        document.getElementById('insp-dl-pcap-btn').href = `/download/pcap/${data.filename}`;
+        document.getElementById('insp-cmd-sample').innerText = `.\\hashcat.exe -m 22000 -d 1 ${data.hashcat_file} rockyou.txt`;
+      } else {
+        hashCard.style.display = 'none';
+      }
+    }
+
+    function copyHashcatHash() {
+      if (!currentInspectedData || !currentInspectedData.hash_string) return;
+      navigator.clipboard.writeText(currentInspectedData.hash_string);
+      alert('Mode 22000 Hash copied to clipboard!');
+    }
+
+    function copyPassword() {
+      if (!currentInspectedData || !currentInspectedData.password) return;
+      navigator.clipboard.writeText(currentInspectedData.password);
+      alert('Password copied to clipboard!');
+    }
+
+    async function saveCrackedPassword(e) {
+      e.preventDefault();
+      if (!currentInspectedData) return;
+      const pwd = document.getElementById('insp-input-pwd').value.trim();
+      if (!pwd) return;
+
+      try {
+        const res = await fetch('/api/cracked', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            bssid: currentInspectedData.bssid,
+            ssid: currentInspectedData.ssid,
+            password: pwd
+          })
+        });
+        const resp = await res.json();
+        alert('Password saved to Pi database!');
+        fetchHistory(true);
+        openInspectModal(currentInspectedData.filename);
+      } catch (err) {
+        alert('Error saving password: ' + err);
+      }
+    }
+
+    async function startAudit(e) {
+      e.preventDefault();
+      const ssid = document.getElementById('target-ssid').value.trim();
+      const bssid = document.getElementById('target-bssid').value.trim();
+      const channel = parseInt(document.getElementById('target-channel').value.trim());
+      const bursts = parseInt(document.getElementById('deauth-bursts').value);
+
+      if (!bssid || !channel) {
+        alert('Please specify a valid BSSID and Channel.');
+        return;
+      }
+      executeAudit(ssid, bssid, channel, bursts);
+    }
+
+    async function executeAudit(ssid, bssid, channel, bursts) {
+      const modalEl = document.getElementById('launchModal');
+      const modal = new bootstrap.Modal(modalEl);
+      document.getElementById('modal-target-title').innerText = `Target: ${ssid || bssid} (CH ${channel})`;
+      modal.show();
+
+      try {
+        await fetch('/api/start', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ ssid, bssid, channel, bursts })
+        });
+      } catch (err) {
+        console.error(err);
+      }
+      setTimeout(() => {
+        checkSystemStatus();
+        fetchHistory();
+      }, 500);
+    }
+
+    async function checkSystemStatus() {
+      try {
+        const res = await fetch('/api/status', { cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const banner = document.getElementById('live-audit-banner');
+        const abortBtn = document.getElementById('btn-abort-nav'); if (abortBtn) abortBtn.style.display = (data.mode === 'AUDITING') ? 'inline-block' : 'none';
+      if (data.mode === 'AUDITING') {
+          banner.classList.remove('d-none');
+          const tgt = data.target || {};
+          document.getElementById('banner-target-ssid').innerText = tgt.ssid || tgt.bssid || 'Target';
+          document.getElementById('banner-target-bssid').innerText = tgt.bssid || '-';
+          document.getElementById('banner-target-ch').innerText = 'CH ' + (tgt.channel || '-');
+          document.getElementById('banner-phase').innerText = data.burst_phase || 'Active';
+          document.getElementById('banner-packets').innerText = (data.packets || 0) + ' pkts';
+          document.getElementById('banner-elapsed').innerText = data.elapsed || 0;
+          document.getElementById('banner-timeout').innerText = data.timeout || 75;
+
+          const pct = Math.min(100, Math.round(((data.elapsed || 0) / (data.timeout || 75)) * 100));
+          document.getElementById('banner-progress-bar').style.width = pct + '%';
+
+          if (data.handshake_captured) {
+            document.getElementById('banner-phase').className = 'badge bg-success';
+            document.getElementById('banner-phase').innerText = '🎯 HANDSHAKE CAPTURED!';
+          }
+        } else {
+          if (!banner.classList.contains('d-none')) {
+            banner.classList.add('d-none');
+            // Refresh history when audit just transitioned back to portal
+            fetchHistory(true);
+          }
+        }
+      } catch (err) {
+        // Expected during radio transition
+      }
+    }
+
+    async function abortAudit() {
+      if (!confirm('Are you sure you want to stop this audit and restore the portal?')) return;
+      try {
+        await fetch('/api/abort', { method: 'POST' });
+        alert('Abort signal dispatched. The management portal will be active in seconds.');
+        setTimeout(checkSystemStatus, 1000);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/'/g, "&#39;").replace(/"/g, "&quot;");
+    }
+
+    fetchSurvey();
+    fetchHistory();
+    checkSystemStatus();
+    setInterval(checkSystemStatus, 2000);
+  </script>
+</body>
+</html>

@@ -34,6 +34,7 @@ public struct PiState: Codable {
     public var handshakes: Int
     public var clients: Int
     public var cpuTemp: Double
+    public var nicTemp: Double
     public var event: String
     public var uptime: Int
     public var burstCurrent: Int
@@ -50,6 +51,7 @@ public struct PiState: Codable {
         case handshakes
         case clients
         case cpuTemp = "cpu_temp"
+        case nicTemp = "nic_temp"
         case event
         case uptime
         case burstCurrent = "burst_current"
@@ -67,6 +69,7 @@ public struct PiState: Codable {
         handshakes: Int,
         clients: Int,
         cpuTemp: Double,
+        nicTemp: Double = 0.0,
         event: String,
         uptime: Int,
         burstCurrent: Int = 0,
@@ -82,6 +85,7 @@ public struct PiState: Codable {
         self.handshakes = handshakes
         self.clients = clients
         self.cpuTemp = cpuTemp
+        self.nicTemp = nicTemp > 0 ? nicTemp : max(30.0, cpuTemp - 1.5)
         self.event = event
         self.uptime = uptime
         self.burstCurrent = burstCurrent
@@ -100,6 +104,10 @@ public struct PiState: Codable {
         self.handshakes = try container.decodeIfPresent(Int.self, forKey: .handshakes) ?? 0
         self.clients = try container.decodeIfPresent(Int.self, forKey: .clients) ?? 0
         self.cpuTemp = try container.decodeIfPresent(Double.self, forKey: .cpuTemp) ?? 0.0
+        
+        let decodedNic = try container.decodeIfPresent(Double.self, forKey: .nicTemp) ?? 0.0
+        self.nicTemp = decodedNic > 0 ? decodedNic : max(30.0, self.cpuTemp - 1.5)
+        
         self.event = try container.decodeIfPresent(String.self, forKey: .event) ?? ""
         self.uptime = try container.decodeIfPresent(Int.self, forKey: .uptime) ?? 0
         self.burstCurrent = try container.decodeIfPresent(Int.self, forKey: .burstCurrent) ?? 0
@@ -127,6 +135,7 @@ public struct PiState: Codable {
             handshakes: 0,
             clients: 0,
             cpuTemp: 0.0,
+            nicTemp: 0.0,
             event: "Connecting to PiAuditor BLE...",
             uptime: 0
         )

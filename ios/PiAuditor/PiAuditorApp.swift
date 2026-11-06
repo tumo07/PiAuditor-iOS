@@ -10,9 +10,14 @@ struct PiAuditorApp: App {
                         Label("Dashboard", systemImage: "antenna.radiowaves.left.and.right")
                     }
                 
+                HistoryView()
+                    .tabItem {
+                        Label("Captures", systemImage: "tray.full.fill")
+                    }
+                
                 LogConsoleView()
                     .tabItem {
-                        Label("Console", systemImage: "terminal")
+                        Label("Console", systemImage: "terminal.fill")
                     }
             }
         }
