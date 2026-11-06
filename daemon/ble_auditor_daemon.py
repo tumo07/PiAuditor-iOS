@@ -12,6 +12,7 @@ import time
 import subprocess
 import threading
 import signal
+import urllib.request
 
 try:
     import dbus
@@ -258,19 +259,74 @@ class DaemonState:
             return 0.0
 
     def get_status(self):
+        mode = "STANDBY"
+        target_ssid = self.target_ssid
+        target_bssid = self.target_bssid
+        channel = self.channel
+        handshakes = self.handshakes_count
+        clients = self.active_clients
+        last_event = self.last_event
+
+        try:
+            req = urllib.request.Request("http://127.0.0.1:5000/api/status", headers={"User-Agent": "PiAuditor-BLE"})
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                data = json.loads(resp.read().decode())
+                mode = data.get("mode", "STANDBY")
+                tgt = data.get("target") or {}
+                if tgt:
+                    target_ssid = tgt.get("ssid", target_ssid)
+                    target_bssid = tgt.get("bssid", target_bssid)
+                    channel = tgt.get("channel", channel)
+                if data.get("handshake_captured"):
+                    handshakes = 1
+                phase = data.get("burst_phase", "")
+                if phase:
+                    last_event = f"{mode}: {phase}"
+        except Exception:
+            job_file = "/home/khoa/wifi_auditor/current_job.json"
+            if os.path.exists(job_file):
+                try:
+                    with open(job_file, "r") as f:
+                        j = json.load(f)
+                        target_ssid = j.get("ssid", target_ssid)
+                        target_bssid = j.get("bssid", target_bssid)
+                        channel = j.get("channel", channel)
+                        mode = "AUDITING"
+                        if j.get("handshake_captured"):
+                            handshakes = 1
+                except Exception:
+                    pass
+
         return {
-            "mode": self.mode,
-            "target_ssid": self.target_ssid,
-            "target_bssid": self.target_bssid,
-            "channel": self.channel,
-            "handshakes": self.handshakes_count,
-            "clients": self.active_clients,
+            "mode": mode,
+            "target_ssid": target_ssid,
+            "target_bssid": target_bssid,
+            "channel": channel,
+            "handshakes": handshakes,
+            "clients": clients,
             "cpu_temp": self.get_cpu_temp(),
-            "event": self.last_event,
+            "event": last_event,
             "uptime": int(time.time())
         }
 
     def get_survey(self):
+        survey_file = "/home/khoa/wifi_auditor/survey.json"
+        if os.path.exists(survey_file):
+            try:
+                with open(survey_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    nets = []
+                    for item in data[:25]:
+                        nets.append({
+                            "ssid": item.get("ssid", "Unknown"),
+                            "bssid": item.get("bssid", ""),
+                            "channel": item.get("channel", 1),
+                            "signal": item.get("rssi", -80),
+                            "security": item.get("crypto", "WPA2")
+                        })
+                    return nets
+            except Exception:
+                pass
         return self.survey_cache
 
     def execute_command(self, cmd):
@@ -281,23 +337,45 @@ class DaemonState:
             self.channel = int(cmd.get("channel", 1))
             self.mode = "AUDITING"
             self.last_event = f"Audit started for {self.target_ssid} (ch {self.channel})"
-            # Trigger background bash / python worker
-            subprocess.Popen([
-                "python3", "/home/khoa/wifi_auditor/core_worker.py",
-                "--ssid", self.target_ssid,
-                "--bssid", self.target_bssid,
-                "--channel", str(self.channel)
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+            def _post_start():
+                try:
+                    payload = json.dumps({
+                        "ssid": self.target_ssid,
+                        "bssid": self.target_bssid,
+                        "channel": self.channel,
+                        "bursts": 3
+                    }).encode("utf-8")
+                    req = urllib.request.Request(
+                        "http://127.0.0.1:5000/api/start",
+                        data=payload,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    urllib.request.urlopen(req, timeout=3.0)
+                except Exception as e:
+                    self.last_event = f"Start API error: {e}"
+            threading.Thread(target=_post_start, daemon=True).start()
 
         elif action == "STOP_AUDIT":
             self.mode = "STANDBY"
-            self.last_event = "Audit stopped by operator"
-            subprocess.run(["pkill", "-f", "core_worker.py"], check=False)
-            subprocess.run(["pkill", "-f", "tcpdump"], check=False)
+            self.last_event = "Audit aborted by operator"
+            def _post_abort():
+                try:
+                    req = urllib.request.Request("http://127.0.0.1:5000/api/abort", data=b"{}")
+                    urllib.request.urlopen(req, timeout=3.0)
+                except Exception:
+                    pass
+            threading.Thread(target=_post_abort, daemon=True).start()
 
         elif action == "SURVEY":
-            self.last_event = "Performing RF survey scan"
-            threading.Thread(target=self._run_survey, daemon=True).start()
+            self.last_event = "Triggering Wi-Fi environment survey"
+            def _post_rescan():
+                try:
+                    req = urllib.request.Request("http://127.0.0.1:5000/api/rescan", data=b"{}")
+                    urllib.request.urlopen(req, timeout=3.0)
+                except Exception:
+                    pass
+            threading.Thread(target=_post_rescan, daemon=True).start()
 
         elif action == "REBOOT":
             self.last_event = "Rebooting system..."
@@ -306,26 +384,6 @@ class DaemonState:
         elif action == "SHUTDOWN":
             self.last_event = "Shutting down..."
             threading.Thread(target=lambda: (time.sleep(2), subprocess.run(["poweroff"]))).start()
-
-    def _run_survey(self):
-        try:
-            res = subprocess.run(["nmcli", "-t", "-f", "SSID,BSSID,CHAN,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "yes"],
-                                 capture_output=True, text=True, timeout=15)
-            networks = []
-            for line in res.stdout.splitlines():
-                parts = line.split(":")
-                if len(parts) >= 5 and parts[0]:
-                    networks.append({
-                        "ssid": parts[0],
-                        "bssid": ":".join(parts[1:7]),
-                        "channel": parts[7] if len(parts) > 7 else parts[2],
-                        "signal": int(parts[8]) if len(parts) > 8 else 50,
-                        "security": parts[-1]
-                    })
-            self.survey_cache = networks[:20]
-            self.last_event = f"Survey complete: found {len(networks)} networks"
-        except Exception as e:
-            self.last_event = f"Survey scan error: {e}"
 
 
 def main():
