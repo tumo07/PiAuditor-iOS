@@ -107,16 +107,8 @@ public class BLEManager: NSObject, ObservableObject {
     
     public func requestSurvey() {
         sendCommand(action: "SURVEY")
-        // Schedule follow-up reads to ingest scanned networks as survey completes
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            self?.readSurvey()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 6.0) { [weak self] in
-            self?.readSurvey()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
-            self?.readSurvey()
-        }
+        // Immediate read to fetch top priority APs
+        readSurvey()
     }
     
     public func clearSurvey() {
@@ -258,21 +250,49 @@ extension BLEManager: CBPeripheralDelegate {
                 }
             }
         } else if characteristic.uuid == BLEManager.surveyCharUUID {
-            do {
-                let decoder = JSONDecoder()
-                let networks = try decoder.decode([WiFiNetwork].self, from: data)
+            let decoder = JSONDecoder()
+            
+            // 1. Try decoding as an array of WiFiNetwork (from ReadValue)
+            if let networks = try? decoder.decode([WiFiNetwork].self, from: data) {
                 DispatchQueue.main.async {
-                    self.surveyedNetworks = networks
-                    self.appendLog("[Survey] Loaded \(networks.count) surveyed networks from Pi.")
+                    for net in networks {
+                        if let idx = self.surveyedNetworks.firstIndex(where: { $0.bssid == net.bssid && $0.ssid == net.ssid }) {
+                            self.surveyedNetworks[idx] = net
+                        } else {
+                            self.surveyedNetworks.append(net)
+                        }
+                    }
+                    self.appendLog("[Survey] Loaded \(networks.count) networks from batch.")
                 }
-            } catch {
-                // If it's a notification trigger with metadata, issue a full read
-                if let str = String(data: data, encoding: .utf8), str.contains("count") {
-                    self.readSurvey()
-                } else {
-                    self.appendLog("[Survey Notice] Received \(data.count) bytes. Parsing...")
-                    if let rawStr = String(data: data, encoding: .utf8) {
-                        self.appendLog("[Survey Preview]: \(rawStr.prefix(80))...")
+                return
+            }
+            
+            // 2. Try decoding as a single streamed WiFiNetwork object
+            if let single = try? decoder.decode(WiFiNetwork.self, from: data) {
+                DispatchQueue.main.async {
+                    if let idx = self.surveyedNetworks.firstIndex(where: { $0.bssid == single.bssid && $0.ssid == single.ssid }) {
+                        self.surveyedNetworks[idx] = single
+                    } else {
+                        // Priority targets at top (e.g. Luka, O-DEV)
+                        let isPriority = single.ssid.localizedCaseInsensitiveContains("luka") ||
+                                         single.ssid.localizedCaseInsensitiveContains("o-dev") ||
+                                         single.ssid.localizedCaseInsensitiveContains("odev")
+                        if isPriority {
+                            self.surveyedNetworks.insert(single, at: 0)
+                        } else {
+                            self.surveyedNetworks.append(single)
+                        }
+                    }
+                }
+                return
+            }
+            
+            // 3. Check for stream completion indicator: {"done": true, "total": N}
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let done = json["done"] as? Bool, done {
+                    let total = json["total"] as? Int ?? self.surveyedNetworks.count
+                    DispatchQueue.main.async {
+                        self.appendLog("[Survey] Stream finished: \(total) networks active.")
                     }
                 }
             }
