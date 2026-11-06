@@ -66,6 +66,15 @@ public struct WiFiNetwork: Identifiable, Codable, Hashable {
         }
     }
     
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(ssid, forKey: .ssid)
+        try container.encode(bssid, forKey: .bssid)
+        try container.encode(channel, forKey: .channel)
+        try container.encode(signal, forKey: .signal)
+        try container.encode(security, forKey: .security)
+    }
+    
     /// True if network is operating on 5GHz spectrum (Channels 36-165)
     public var is5GHz: Bool {
         if let chNum = Int(channel) {

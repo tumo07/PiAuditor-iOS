@@ -71,9 +71,8 @@ struct PacketInspectView: View {
                         .font(.title2)
                         .bold()
                     Text(currentItem.bssid.uppercased())
-                        .font(.caption)
+                        .font(.system(.caption, design: .monospaced))
                         .foregroundColor(.secondary)
-                        .fontDesign(.monospaced)
                 }
                 Spacer()
                 
@@ -116,8 +115,7 @@ struct PacketInspectView: View {
                         .bold()
                         .foregroundColor(.green)
                     Text(currentItem.password ?? "Password in vault")
-                        .font(.headline)
-                        .fontDesign(.monospaced)
+                        .font(.system(.headline, design: .monospaced))
                 }
             } else if currentItem.isValidHandshake {
                 Image(systemName: "checkmark.seal.fill")
@@ -278,9 +276,8 @@ struct PacketInspectView: View {
                                 .foregroundColor(.blue)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(client.mac.uppercased())
-                                    .font(.caption)
+                                    .font(.system(.caption, design: .monospaced))
                                     .bold()
-                                    .fontDesign(.monospaced)
                                 Text(client.role)
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
@@ -362,9 +359,8 @@ struct PacketInspectView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                         Text(pwd)
-                            .font(.title3)
+                            .font(.system(.title3, design: .monospaced))
                             .bold()
-                            .fontDesign(.monospaced)
                             .foregroundColor(.green)
                     }
                     Spacer()

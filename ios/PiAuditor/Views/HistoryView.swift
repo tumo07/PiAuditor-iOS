@@ -178,9 +178,8 @@ struct HistoryView: View {
                         }
                     }
                     Text(item.bssid.uppercased())
-                        .font(.caption)
+                        .font(.system(.caption, design: .monospaced))
                         .foregroundColor(.secondary)
-                        .fontDesign(.monospaced)
                 }
                 Spacer()
                 
