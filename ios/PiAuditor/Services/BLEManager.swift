@@ -15,6 +15,7 @@ public class BLEManager: NSObject, ObservableObject {
     
     @Published public var isConnected = false
     @Published public var isScanning = false
+    @Published public var isGATTReady = false
     @Published public var deviceRSSI: Int = 0
     @Published public var piState: PiState = .initial
     @Published public var surveyedNetworks: [WiFiNetwork] = []
@@ -38,8 +39,10 @@ public class BLEManager: NSObject, ObservableObject {
             return
         }
         isScanning = true
+        isGATTReady = false
         appendLog("[*] Scanning for PiAuditor-BLE...")
-        centralManager.scanForPeripherals(withServices: [BLEManager.serviceUUID], options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+        // Discover any matching service or by name to bypass caching
+        centralManager.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
     }
     
     public func stopScanning() {
@@ -55,7 +58,21 @@ public class BLEManager: NSObject, ObservableObject {
     
     public func sendCommand(action: String, parameters: [String: Any] = [:]) {
         guard let p = peripheral, let cmdChar = commandChar else {
-            appendLog("[!] Cannot send command: PiAuditor is not connected.")
+            appendLog("[*] Channels synchronizing... Retrying '\(action)' in 1s.")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                guard let self = self, self.isConnected else { return }
+                if let p2 = self.peripheral, let cmd2 = self.commandChar {
+                    var dict: [String: Any] = ["action": action]
+                    for (k, v) in parameters { dict[k] = v }
+                    if let data = try? JSONSerialization.data(withJSONObject: dict, options: []) {
+                        let type: CBCharacteristicWriteType = cmd2.properties.contains(.writeWithoutResponse) ? .withoutResponse : .withResponse
+                        p2.writeValue(data, for: cmd2, type: type)
+                        self.appendLog("[>] Dispatched CMD: \(action)")
+                    }
+                } else {
+                    self.appendLog("[!] Cannot send command: Still synchronizing.")
+                }
+            }
             return
         }
         
@@ -76,7 +93,11 @@ public class BLEManager: NSObject, ObservableObject {
     
     public func readSurvey() {
         guard let p = peripheral, let sChar = surveyChar else {
-            appendLog("[!] Cannot read survey: Characteristic not discovered.")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                if let p2 = self?.peripheral, let s2 = self?.surveyChar {
+                    p2.readValue(for: s2)
+                }
+            }
             return
         }
         p.readValue(for: sChar)
@@ -107,7 +128,6 @@ public class BLEManager: NSObject, ObservableObject {
     
     public func requestSurvey() {
         sendCommand(action: "SURVEY")
-        // Immediate read to fetch top priority APs
         readSurvey()
     }
     
@@ -144,6 +164,7 @@ extension BLEManager: CBCentralManagerDelegate {
         case .poweredOff:
             appendLog("[-] Bluetooth powered off.")
             isConnected = false
+            isGATTReady = false
         case .unauthorized:
             appendLog("[!] Bluetooth permission unauthorized.")
         default:
@@ -152,9 +173,15 @@ extension BLEManager: CBCentralManagerDelegate {
     }
     
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? "Unknown Device"
-        appendLog("[+] Discovered: \(name) (RSSI: \(RSSI) dBm)")
+        let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name ?? ""
         
+        // Match PiAuditor-BLE by name or advertisement service
+        let isPi = name.contains("PiAuditor") ||
+                   (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID])?.contains(where: { $0.uuidString.lowercased().contains("a001") }) == true
+        
+        guard isPi else { return }
+        
+        appendLog("[+] Discovered: \(name) (RSSI: \(RSSI) dBm)")
         self.peripheral = peripheral
         self.deviceRSSI = RSSI.intValue
         self.stopScanning()
@@ -163,14 +190,17 @@ extension BLEManager: CBCentralManagerDelegate {
     
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         self.isConnected = true
+        self.isGATTReady = false
         self.hadHandshakeAlert = false
         appendLog("[+] Connected to PiAuditor!")
         peripheral.delegate = self
-        peripheral.discoverServices([BLEManager.serviceUUID])
+        // Discover all services to avoid stale GATT cache issues
+        peripheral.discoverServices(nil)
     }
     
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         self.isConnected = false
+        self.isGATTReady = false
         self.commandChar = nil
         self.surveyChar = nil
         self.statusChar = nil
@@ -180,6 +210,7 @@ extension BLEManager: CBCentralManagerDelegate {
     
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
         self.isConnected = false
+        self.isGATTReady = false
         appendLog("[!] Failed to connect: \(error?.localizedDescription ?? "Unknown error")")
         startScanning()
     }
@@ -188,37 +219,57 @@ extension BLEManager: CBCentralManagerDelegate {
 // MARK: - CBPeripheralDelegate
 extension BLEManager: CBPeripheralDelegate {
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        if let error = error {
+            appendLog("[!] Service discovery error: \(error.localizedDescription)")
+            return
+        }
         guard let services = peripheral.services else { return }
-        for service in services where service.uuid == BLEManager.serviceUUID {
-            peripheral.discoverCharacteristics([
-                BLEManager.statusCharUUID,
-                BLEManager.commandCharUUID,
-                BLEManager.surveyCharUUID
-            ], for: service)
+        for service in services {
+            let sUUID = service.uuid.uuidString.lowercased()
+            if sUUID.contains("a001") {
+                appendLog("[+] Discovered PiAuditor Primary Service.")
+                peripheral.discoverCharacteristics(nil, for: service)
+            }
         }
     }
     
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        if let error = error {
+            appendLog("[!] Characteristic discovery error: \(error.localizedDescription)")
+            return
+        }
         guard let chars = service.characteristics else { return }
         for ch in chars {
-            if ch.uuid == BLEManager.statusCharUUID {
+            let u = ch.uuid.uuidString.lowercased()
+            if u.contains("a002") {
                 self.statusChar = ch
                 peripheral.setNotifyValue(true, for: ch)
                 peripheral.readValue(for: ch)
-            } else if ch.uuid == BLEManager.commandCharUUID {
+                appendLog("[+] Status channel active.")
+            } else if u.contains("a003") {
                 self.commandChar = ch
-            } else if ch.uuid == BLEManager.surveyCharUUID {
+                appendLog("[+] Command channel active.")
+            } else if u.contains("a004") {
                 self.surveyChar = ch
                 peripheral.setNotifyValue(true, for: ch)
                 peripheral.readValue(for: ch)
+                appendLog("[+] Survey channel active.")
+            }
+        }
+        
+        if self.commandChar != nil && self.surveyChar != nil {
+            DispatchQueue.main.async {
+                self.isGATTReady = true
+                self.appendLog("[★] Appliance channels fully synchronized!")
             }
         }
     }
     
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard let data = characteristic.value else { return }
+        let u = characteristic.uuid.uuidString.lowercased()
         
-        if characteristic.uuid == BLEManager.statusCharUUID {
+        if u.contains("a002") {
             do {
                 let decoder = JSONDecoder()
                 let state = try decoder.decode(PiState.self, from: data)
@@ -228,13 +279,11 @@ extension BLEManager: CBPeripheralDelegate {
                     self.piState = state
                     self.appendLog("[Status] \(state.mode.displayTitle) | Handshakes: \(state.handshakes) | Temp: \(state.cpuTemp)°C")
                     
-                    // Trigger automatic survey read once surveying completes
                     if previousMode == .surveying && state.mode != .surveying {
                         self.appendLog("[*] Scan completed. Requesting updated visible networks...")
                         self.readSurvey()
                     }
                     
-                    // Alert when handshake is captured
                     if state.handshakeCaptured && !self.hadHandshakeAlert {
                         self.hadHandshakeAlert = true
                         #if canImport(UIKit)
@@ -249,10 +298,10 @@ extension BLEManager: CBPeripheralDelegate {
                     appendLog("[Raw Status]: \(str)")
                 }
             }
-        } else if characteristic.uuid == BLEManager.surveyCharUUID {
+        } else if u.contains("a004") {
             let decoder = JSONDecoder()
             
-            // 1. Try decoding as an array of WiFiNetwork (from ReadValue)
+            // 1. Array decode
             if let networks = try? decoder.decode([WiFiNetwork].self, from: data) {
                 DispatchQueue.main.async {
                     for net in networks {
@@ -262,18 +311,17 @@ extension BLEManager: CBPeripheralDelegate {
                             self.surveyedNetworks.append(net)
                         }
                     }
-                    self.appendLog("[Survey] Loaded \(networks.count) networks from batch.")
+                    self.appendLog("[Survey] Loaded \(networks.count) networks from initial batch.")
                 }
                 return
             }
             
-            // 2. Try decoding as a single streamed WiFiNetwork object
+            // 2. Single object stream
             if let single = try? decoder.decode(WiFiNetwork.self, from: data) {
                 DispatchQueue.main.async {
                     if let idx = self.surveyedNetworks.firstIndex(where: { $0.bssid == single.bssid && $0.ssid == single.ssid }) {
                         self.surveyedNetworks[idx] = single
                     } else {
-                        // Priority targets at top (e.g. Luka, O-DEV)
                         let isPriority = single.ssid.localizedCaseInsensitiveContains("luka") ||
                                          single.ssid.localizedCaseInsensitiveContains("o-dev") ||
                                          single.ssid.localizedCaseInsensitiveContains("odev")
@@ -287,12 +335,12 @@ extension BLEManager: CBPeripheralDelegate {
                 return
             }
             
-            // 3. Check for stream completion indicator: {"done": true, "total": N}
+            // 3. Completion packet
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 if let done = json["done"] as? Bool, done {
                     let total = json["total"] as? Int ?? self.surveyedNetworks.count
                     DispatchQueue.main.async {
-                        self.appendLog("[Survey] Stream finished: \(total) networks active.")
+                        self.appendLog("[Survey] Stream completed: \(total) networks active.")
                     }
                 }
             }

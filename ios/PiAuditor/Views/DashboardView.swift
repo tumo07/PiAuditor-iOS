@@ -144,19 +144,19 @@ struct DashboardView: View {
         HStack {
             Image(systemName: ble.isConnected ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
                 .font(.title2)
-                .foregroundColor(ble.isConnected ? .green : .orange)
+                .foregroundColor(ble.isConnected ? (ble.isGATTReady ? .green : .blue) : .orange)
             
             VStack(alignment: .leading, spacing: 2) {
-                Text(ble.isConnected ? "Connected to PiAuditor" : "Searching for PiAuditor-BLE...")
+                Text(ble.isConnected ? (ble.isGATTReady ? "Connected to PiAuditor" : "Synchronizing Channels...") : "Searching for PiAuditor-BLE...")
                     .font(.headline)
-                Text(ble.isConnected ? "BLE Out-of-Band Link Active (RSSI: \(ble.deviceRSSI) dBm)" : "Keep Pi near your iPhone")
+                Text(ble.isConnected ? (ble.isGATTReady ? "BLE Link Active (RSSI: \(ble.deviceRSSI) dBm)" : "Negotiating GATT characteristics...") : "Keep Pi near your iPhone")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             Spacer()
             
             Circle()
-                .fill(ble.isConnected ? Color.green : Color.orange)
+                .fill(ble.isConnected ? (ble.isGATTReady ? Color.green : Color.blue) : Color.orange)
                 .frame(width: 12, height: 12)
         }
         .padding()
